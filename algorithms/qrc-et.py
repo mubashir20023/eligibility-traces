@@ -22,6 +22,7 @@ from flax.training.train_state import TrainState
 from flax import struct
 import csv
 import flax
+import flax.linen as nn
 
 from utils import normalization, tree
 from networks.MLP import sparse_init
@@ -117,6 +118,12 @@ class Args:
     """whether to resume from the last checkpoint if available"""
     use_spr: bool = False
     """whether to use SPR (Self-Predictive Representations)"""
+    et_lr: float = 1e-4
+    """learning rate for ET module"""
+    et_feature_dim: int = 64
+    """dimension of ET feature and trace space"""
+    et_trace_coeff: float = 1.0
+    """weight of ET trace consistency loss relative to Q prediction loss"""
 
 
 class OctaxToGymAdapter(gym.Env):
@@ -433,16 +440,67 @@ class Config:
 Agent = namedtuple("Agent", ["init_state", "step", "update"])
 
 
+# ============================================================
+# EXPECTED ELIGIBILITY TRACE (ET) MODULE
+# ============================================================
+class ETModule(nn.Module):
+    """
+    Implements the Expected Eligibility Trace as a learned function of state.
+
+    The ET Bellman equation:
+        z(s_t) = φ(s_t) + γλ · E_{s_{t-1} ~ p^{-1}(·|s_t)}[ z(s_{t-1}) ]
+
+    Since we only observe ONE predecessor per step (streaming setting), the
+    regression loss below averages over ALL observed predecessors over time —
+    i.e., whenever s_t is visited from a different s_{t-1}, the network gets
+    a new gradient signal.  At convergence z(s) → expected accumulated trace.
+
+    This module also includes a Q-head so ET learning quality can be measured
+    independently from the main QRC agent.
+    """
+
+    feature_dim: int   # dimension of φ(s) and z(s)
+    action_dim: int
+
+    @nn.compact
+    def __call__(self, x):
+        # ── Encoder: obs → φ(s) ∈ R^{feature_dim} ──
+        no_batch = x.ndim < 4  # single obs (no batch dim)
+        if no_batch:
+            x = x[None]
+        x = x.reshape(x.shape[0], -1)          # flatten spatial dims
+        phi = nn.Dense(128, name="enc_fc1")(x)
+        phi = nn.relu(phi)
+        phi = nn.Dense(self.feature_dim, name="enc_fc2")(phi)
+
+        # ── Trace network: φ(s) → z(s) ∈ R^{feature_dim} ──
+        # Trained to satisfy: z(s_t) ≈ φ(s_t) + γλ · z(s_{t-1})
+        z = nn.Dense(self.feature_dim, name="trace_fc1")(phi)
+        z = nn.relu(z)
+        z = nn.Dense(self.feature_dim, name="trace_fc2")(z)
+
+        # ── Q-head: z → Q_ET(s, ·) ∈ R^{action_dim} ──
+        q_et = nn.Dense(self.action_dim, name="et_head")(z)
+
+        if no_batch:
+            phi = phi.squeeze(0)
+            z = z.squeeze(0)
+            q_et = q_et.squeeze(0)
+
+        return phi, z, q_et
+
+
 ###################################################################################
 class AgentState(NamedTuple):
     agent_config: Config
     train_state: TrainState
     h_state: TrainState
-    h_trace: jnp.ndarray  # the scalar trace for h (small z_t from the paper)
-    grad_h_trace: (
-        jnp.ndarray
-    )  # the trace of the gradient of h (z_t^{theta} from the paper)
-    grad_q_trace: jnp.ndarray  # the trace of the gradient of v (z_t^{w} from the paper)
+    h_trace: jnp.ndarray       # scalar trace for h
+    grad_h_trace: jnp.ndarray  # gradient trace for h network
+    grad_q_trace: jnp.ndarray  # gradient trace for Q network
+    # ── ET additions ──
+    et_state: TrainState       # ETModule (encoder + trace net + Q-head)
+    prev_z: jnp.ndarray        # z(s_{t-1}) stored from the previous step
 
 
 @partial(jax.jit, static_argnames=["action_dim"])
@@ -528,12 +586,31 @@ def init_agent_state_qrc_agent(
     print(
         f"Total number of params: {params_sum(train_states[0].params) + params_sum(train_states[1].params)}"
     )
-    # q_train_state, h_train_state = train_states
     grad_h_trace = jax.tree.map(jnp.zeros_like, train_states[0].params)
     grad_v_trace = jax.tree.map(jnp.zeros_like, train_states[1].params)
     h_trace = 0.0
+
+    # ── Initialise ET module ──
+    et_module = ETModule(
+        feature_dim=agent_config.et_feature_dim,
+        action_dim=action_dim,
+    )
+    rng, _rng = jax.random.split(rng)
+    et_params = et_module.init(_rng, jnp.zeros(obs_shape))
+    et_state = TrainState.create(
+        apply_fn=et_module.apply,
+        params=et_params,
+        tx=getattr(optax, agent_config.opt)(agent_config.et_lr),
+    )
+    prev_z = jnp.zeros(agent_config.et_feature_dim)
+    print(f"ET module params: {params_sum(et_params)}")
+
     return (
-        AgentState(agent_config, *train_states, h_trace, grad_h_trace, grad_v_trace),
+        AgentState(
+            agent_config, *train_states,
+            h_trace, grad_h_trace, grad_v_trace,
+            et_state, prev_z,
+        ),
         rng,
     )
 
@@ -629,12 +706,67 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
     q_update_l2 = optax.global_norm(q_update)
     h_update_l2 = optax.global_norm(h_update)
 
+    # ================================================================
+    # ET UPDATE
+    # The ET Bellman equation:
+    #   z(s_t) = φ(s_t) + γλ · E[z(s_{t-1}) | s_t]
+    #
+    # We train the ETModule with two losses:
+    #   1. Trace consistency: z(s_t) ≈ φ(s_t) + γλ · prev_z
+    #      Over time, averaging over many (s_{t-1}, s_t) pairs gives
+    #      the expected predecessor trace — the ET approximation.
+    #   2. Q prediction: Q_ET(s_t, a_t) ≈ R + γ·max Q(s_{t+1})
+    #      Measures whether ET features lead to good Q-value estimates.
+    # ================================================================
+    et_state = agent_state.et_state
+    prev_z = agent_state.prev_z
+
+    # Bootstrap target from the main Q-network (stop gradient — ET does not
+    # affect the main QRC network; QRC and ET train independently here)
+    next_q_main = jax.lax.stop_gradient(
+        train_state.apply_fn(train_state.params, next_obs)
+    )
+    next_q_max = jnp.max(next_q_main)
+
+    def et_loss_fn(et_params):
+        phi_t, z_t, q_et = et_state.apply_fn(et_params, obs)
+
+        # ── 1. Trace consistency loss (ET Bellman equation) ──
+        # Target: stop_gradient so it doesn't "chase itself"
+        trace_target = jax.lax.stop_gradient(
+            phi_t + config.gamma * config.lamda * prev_z
+        )
+        trace_loss = jnp.mean((z_t - trace_target) ** 2)
+
+        # ── 2. ET Q-prediction loss ──
+        td_target_et = jax.lax.stop_gradient(
+            reward + config.gamma * next_q_max * (1 - terminated)
+        )
+        et_q_loss = (td_target_et - q_et[action]) ** 2
+
+        total = et_q_loss + config.et_trace_coeff * trace_loss
+        return total, (z_t, q_et[action], td_target_et - q_et[action], trace_loss)
+
+    (_, et_aux), et_grads = jax.value_and_grad(et_loss_fn, has_aux=True)(
+        et_state.params
+    )
+    z_t, q_et_val, et_td_error, et_trace_loss = et_aux
+    new_et_state = et_state.apply_gradients(grads=et_grads)
+
+    # Update prev_z; reset on episode end / non-greedy (same rule as QRC traces)
+    prev_z_new = jax.lax.stop_gradient(z_t)
+    if terminated or truncated or is_nongreedy:
+        prev_z_new = jnp.zeros_like(prev_z_new)
+
     metrics = {
         "td_error": td_error,
         "q_val": q_val,
         "h_val": h_t,
         "q_update_l2": q_update_l2,
         "h_update_l2": h_update_l2,
+        "et_td_error": et_td_error,
+        "et_q_val": q_et_val,
+        "et_trace_loss": et_trace_loss,
     }
 
     return (
@@ -645,6 +777,8 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
             h_trace_t,
             grad_h_trace_t,
             grad_q_trace_t,
+            new_et_state,
+            prev_z_new,
         ),
         metrics,
     )
@@ -733,6 +867,14 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 agent_state.grad_q_trace, checkpoint_data["grad_q_trace"]
             )
 
+            # Restore ET state if present in checkpoint (backwards compat)
+            new_et_state = agent_state.et_state
+            restored_prev_z = agent_state.prev_z
+            if "et_state" in checkpoint_data and checkpoint_data["et_state"] is not None:
+                new_et_state = restore_train_state(agent_state.et_state, checkpoint_data["et_state"])
+            if "prev_z" in checkpoint_data and checkpoint_data["prev_z"] is not None:
+                restored_prev_z = flax.serialization.from_bytes(agent_state.prev_z, checkpoint_data["prev_z"])
+
             agent_state = AgentState(
                 agent_config=agent_state.agent_config,
                 train_state=new_train_state,
@@ -740,6 +882,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 h_trace=h_trace,
                 grad_h_trace=grad_h_trace,
                 grad_q_trace=grad_q_trace,
+                et_state=new_et_state,
+                prev_z=restored_prev_z,
             )
 
             start_step = checkpoint_data["step"] + 1
@@ -812,6 +956,9 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 "h_values": float(metrics["h_val"]),
                 "q_update_l2": float(metrics["q_update_l2"]),
                 "h_update_l2": float(metrics["h_update_l2"]),
+                "et_td_error": float(metrics["et_td_error"]),
+                "et_q_val": float(metrics["et_q_val"]),
+                "et_trace_loss": float(metrics["et_trace_loss"]),
                 "SPS": sps,
                 "epsilon": epsilon,
                 "episodes": episodes,
@@ -829,6 +976,9 @@ def experiment(args: Args, agent: Agent, run_name: str):
                     "losses/h_values": log_dict["h_values"],
                     "updates/q_update_l2": log_dict["q_update_l2"],
                     "updates/h_update_l2": log_dict["h_update_l2"],
+                    "et/td_error": log_dict["et_td_error"],
+                    "et/q_val": log_dict["et_q_val"],
+                    "et/trace_loss": log_dict["et_trace_loss"],
                     "episodes": episodes,
                 },
                 step=t,
@@ -858,6 +1008,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 "h_trace": flax.serialization.to_bytes(agent_state.h_trace),
                 "grad_h_trace": flax.serialization.to_bytes(agent_state.grad_h_trace),
                 "grad_q_trace": flax.serialization.to_bytes(agent_state.grad_q_trace),
+                "et_state": save_train_state(agent_state.et_state),
+                "prev_z": flax.serialization.to_bytes(agent_state.prev_z),
                 "rng": rng,
                 "episodes": episodes,
                 "episode_return": episode_return,
@@ -869,9 +1021,7 @@ def experiment(args: Args, agent: Agent, run_name: str):
             tmp_path = checkpoint_path + ".tmp"
             with open(tmp_path, "wb") as f:
                 pickle.dump(checkpoint_data, f)
-            if os.path.exists(checkpoint_path):
-                os.remove(checkpoint_path)
-            os.rename(tmp_path, checkpoint_path)
+            os.replace(tmp_path, checkpoint_path)
             # print(f"Resume checkpoint saved to {checkpoint_path}")
 
         # Periodic model checkpointing
