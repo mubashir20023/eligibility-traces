@@ -22,6 +22,7 @@ from flax.training.train_state import TrainState
 from flax import struct
 import csv
 import flax
+import flax.linen as nn
 
 from utils import tree
 from networks.MLP import sparse_init
@@ -136,6 +137,13 @@ class Args:
 
     orth_beta: float = 0.99
     """EMA momentum factor for orthogonal gradient projection"""
+
+    et_lr: float = 1e-4
+    """learning rate for ET module"""
+    et_feature_dim: int = 64
+    """dimension of ET feature and trace space"""
+    et_trace_coeff: float = 1.0
+    """weight of ET trace consistency loss relative to Q prediction loss"""
 
     max_grad: float = 100.0
     """maximum gradient norm for clipping"""
@@ -519,6 +527,35 @@ def cosine_similarity_loss(pred, target):
     return -cos_sim
 
 
+class ETModule(nn.Module):
+    """
+    Expected Eligibility Trace module.
+    ET Bellman equation: z(s_t) = φ(s_t) + γλ · E[z(s_{t-1}) | s_t]
+    Trained with semi-gradient TD — stop_gradient on the target.
+    """
+    feature_dim: int
+    action_dim: int
+
+    @nn.compact
+    def __call__(self, x):
+        no_batch = x.ndim < 4
+        if no_batch:
+            x = x[None]
+        x = x.reshape(x.shape[0], -1)
+        phi = nn.Dense(128, name="enc_fc1")(x)
+        phi = nn.relu(phi)
+        phi = nn.Dense(self.feature_dim, name="enc_fc2")(phi)
+        z = nn.Dense(self.feature_dim, name="trace_fc1")(phi)
+        z = nn.relu(z)
+        z = nn.Dense(self.feature_dim, name="trace_fc2")(z)
+        q_et = nn.Dense(self.action_dim, name="et_head")(z)
+        if no_batch:
+            phi = phi.squeeze(0)
+            z = z.squeeze(0)
+            q_et = q_et.squeeze(0)
+        return phi, z, q_et
+
+
 class AgentState(NamedTuple):
     agent_config: Config
     train_state: TrainState
@@ -539,6 +576,9 @@ class AgentState(NamedTuple):
     spr_momentum_proj: Optional[jnp.ndarray]  # None if shared_online_proj is True
     spr_momentum_pred: Optional[jnp.ndarray]
     spr_momentum_trans: Optional[jnp.ndarray]
+    # ET additions
+    et_state: TrainState
+    prev_z: jnp.ndarray
 
 
 @partial(jax.jit, static_argnames=["action_dim"])
@@ -717,6 +757,18 @@ def init_agent_state_qrc_agent(
 
     print(f"Total number of params: {total_params}")
 
+    # Initialize ET module
+    et_module = ETModule(feature_dim=agent_config.et_feature_dim, action_dim=action_dim)
+    rng, _rng = jax.random.split(rng)
+    et_params = et_module.init(_rng, jnp.zeros(obs_shape))
+    et_state = TrainState.create(
+        apply_fn=et_module.apply,
+        params=et_params,
+        tx=getattr(optax, agent_config.opt)(agent_config.et_lr),
+    )
+    prev_z = jnp.zeros(agent_config.et_feature_dim)
+    print(f"ET module params: {params_sum(et_params)}")
+
     # Initialize orthogonal gradient momentum states (EMA of past gradients)
     spr_momentum_online = jax.tree.map(jnp.zeros_like, train_states[0].params)
     spr_momentum_proj = (
@@ -747,6 +799,8 @@ def init_agent_state_qrc_agent(
             spr_momentum_proj,
             spr_momentum_pred,
             spr_momentum_trans,
+            et_state,
+            prev_z,
         ),
         rng,
     )
@@ -1179,6 +1233,40 @@ def update_step_qrc_agent(
     q_update_l2 = optax.global_norm(q_update)
     h_update_l2 = optax.global_norm(h_update)
 
+    # ================================================================
+    # ET UPDATE
+    # Same as in qrc-et.py — runs independently of the SPR loss.
+    # Uses the main Q-network for TD bootstrap (stop_gradient).
+    # ================================================================
+    et_state = agent_state.et_state
+    prev_z = agent_state.prev_z
+
+    next_q_main = jax.lax.stop_gradient(
+        train_state.apply_fn(train_state.params, next_obs)
+    )
+    next_q_max = jnp.max(next_q_main)
+
+    def et_loss_fn(et_params):
+        phi_t, z_t, q_et = et_state.apply_fn(et_params, obs)
+        trace_target = jax.lax.stop_gradient(
+            phi_t + config.gamma * config.lamda * prev_z
+        )
+        trace_loss = jnp.mean((z_t - trace_target) ** 2)
+        td_target_et = jax.lax.stop_gradient(
+            reward + config.gamma * next_q_max * (1 - terminated)
+        )
+        et_q_loss = (td_target_et - q_et[action]) ** 2
+        total = et_q_loss + config.et_trace_coeff * trace_loss
+        return total, (z_t, q_et[action], td_target_et - q_et[action], trace_loss)
+
+    (_, et_aux), et_grads = jax.value_and_grad(et_loss_fn, has_aux=True)(et_state.params)
+    z_t, q_et_val, et_td_error, et_trace_loss = et_aux
+    new_et_state = et_state.apply_gradients(grads=et_grads)
+
+    prev_z_new = jax.lax.stop_gradient(z_t)
+    if terminated or truncated or is_nongreedy:
+        prev_z_new = jnp.zeros_like(prev_z_new)
+
     metrics = {
         "td_error": td_error,
         "q_val": q_val,
@@ -1188,6 +1276,9 @@ def update_step_qrc_agent(
         "spr_loss": spr_loss,
         "mse_loss": mse_loss,
         "y_magnitude": y_mag,
+        "et_td_error": et_td_error,
+        "et_q_val": q_et_val,
+        "et_trace_loss": et_trace_loss,
     }
 
     return (
@@ -1207,6 +1298,8 @@ def update_step_qrc_agent(
             spr_momentum_proj,
             spr_momentum_pred,
             spr_momentum_trans,
+            new_et_state,
+            prev_z_new,
         ),
         metrics,
     )
@@ -1270,6 +1363,9 @@ def experiment(args: Args, agent: Agent, run_name: str):
         "spr_loss": 0.0,
         "mse_loss": 0.0,
         "y_magnitude": 0.0,
+        "et_td_error": 0.0,
+        "et_q_val": 0.0,
+        "et_trace_loss": 0.0,
     }
     loss_count = 0
 
@@ -1365,6 +1461,13 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 checkpoint_data.get("spr_momentum_trans"),
             )
 
+            new_et_state = agent_state.et_state
+            restored_prev_z = agent_state.prev_z
+            if "et_state" in checkpoint_data and checkpoint_data["et_state"] is not None:
+                new_et_state = restore_train_state(agent_state.et_state, checkpoint_data["et_state"])
+            if "prev_z" in checkpoint_data and checkpoint_data["prev_z"] is not None:
+                restored_prev_z = flax.serialization.from_bytes(agent_state.prev_z, checkpoint_data["prev_z"])
+
             agent_state = AgentState(
                 agent_config=agent_state.agent_config,
                 train_state=new_train_state,
@@ -1381,6 +1484,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 spr_momentum_proj=new_spr_momentum_proj,
                 spr_momentum_pred=new_spr_momentum_pred,
                 spr_momentum_trans=new_spr_momentum_trans,
+                et_state=new_et_state,
+                prev_z=restored_prev_z,
             )
 
             if "traj_buffer" in checkpoint_data:
@@ -1495,6 +1600,9 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 "spr_loss": avg_losses["spr_loss"],
                 "mse_loss": avg_losses["mse_loss"],
                 "y_magnitude": avg_losses["y_magnitude"],
+                "et_td_error": avg_losses["et_td_error"],
+                "et_q_val": avg_losses["et_q_val"],
+                "et_trace_loss": avg_losses["et_trace_loss"],
             }
 
             wandb.log(
@@ -1513,6 +1621,9 @@ def experiment(args: Args, agent: Agent, run_name: str):
                     "losses/spr_loss": log_dict["spr_loss"],
                     "losses/mse_loss": log_dict["mse_loss"],
                     "losses/y_magnitude": log_dict["y_magnitude"],
+                    "et/td_error": log_dict["et_td_error"],
+                    "et/q_val": log_dict["et_q_val"],
+                    "et/trace_loss": log_dict["et_trace_loss"],
                 },
                 step=t,
             )
@@ -1559,6 +1670,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 "spr_momentum_proj": save_momentum(agent_state.spr_momentum_proj),
                 "spr_momentum_pred": save_momentum(agent_state.spr_momentum_pred),
                 "spr_momentum_trans": save_momentum(agent_state.spr_momentum_trans),
+                "et_state": save_train_state(agent_state.et_state),
+                "prev_z": flax.serialization.to_bytes(agent_state.prev_z),
                 "traj_buffer": flax.serialization.to_bytes(traj_buffer),
                 "rng": rng,
                 "episodes": episodes,

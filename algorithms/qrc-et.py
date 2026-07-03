@@ -119,11 +119,12 @@ class Args:
     use_spr: bool = False
     """whether to use SPR (Self-Predictive Representations)"""
     et_lr: float = 1e-4
-    """learning rate for ET module"""
-    et_feature_dim: int = 64
-    """dimension of ET feature and trace space"""
-    et_trace_coeff: float = 1.0
-    """weight of ET trace consistency loss relative to Q prediction loss"""
+    """learning rate for the expected-trace projection Theta (z_theta(s) = Theta x(s))"""
+    et_head_name: Optional[str] = None
+    """name of the Q-network's final (linear) Dense submodule, i.e. the split point
+    between the shared representation x(s) and the head weights w in Algorithm 3
+    of the ET paper. Auto-detected from env_type if left as None; override only if
+    you know your net_arch names its last layer differently."""
 
 
 class OctaxToGymAdapter(gym.Env):
@@ -441,53 +442,73 @@ Agent = namedtuple("Agent", ["init_state", "step", "update"])
 
 
 # ============================================================
-# EXPECTED ELIGIBILITY TRACE (ET) MODULE
+# EXPECTED ELIGIBILITY TRACE (ET) PROJECTION  —  z_theta(s) = Theta x(s)
 # ============================================================
-class ETModule(nn.Module):
+# NOTE on the fix (see review discussion): the previous version of this file
+# built z(s) from a brand-new, independently-encoded, non-linear network fed
+# with raw pixels. That violates Algorithm 3 of the ET paper in two ways:
+#   (1) z_theta must be a *linear* map of the *same* representation x(s) the
+#       Q-network's head already uses (the "predecessor feature trick"), not
+#       a fresh non-linear encoder.
+#   (2) z(s) must actually replace/augment the eligibility trace used to
+#       update the Q-network's weights w — it can't just train its own,
+#       disconnected Q-head.
+#
+# Here, x(s) is obtained "for free" and exactly, with no changes to
+# networks/value_networks.py: since the Q-network's head is a linear layer
+# q(s, a) = kernel[:, a] . x(s) + bias[a], the gradient d q(s,a)/d kernel[:, a]
+# IS x(s). We already compute this gradient (`q_grads`) for the TD update, so
+# we just read x(s) out of it instead of recomputing it with a second
+# encoder. This class only implements Theta itself: a single linear layer
+# mapping x(s) -> one predicted trace-column per action.
+class ETProjection(nn.Module):
+    """Theta: x(s) in R^{feat_dim}  -->  z_theta(s) in R^{action_dim x feat_dim}
+
+    z_theta(s)[a] approximates E[ eligibility-trace column for action a | S_t = s ],
+    i.e. what the accumulated, discounted trace of the head's weight-column for
+    action a would look like, whether or not a was actually taken at t. This is
+    exactly what buys the "counterfactual" credit assignment ET is for: on any
+    single step we only observe (and can only bootstrap towards) the column
+    for the action that was actually taken, but the learned z_theta(s) is
+    queried for *all* actions when it is used in the Q-update.
     """
-    Implements the Expected Eligibility Trace as a learned function of state.
 
-    The ET Bellman equation:
-        z(s_t) = φ(s_t) + γλ · E_{s_{t-1} ~ p^{-1}(·|s_t)}[ z(s_{t-1}) ]
-
-    Since we only observe ONE predecessor per step (streaming setting), the
-    regression loss below averages over ALL observed predecessors over time —
-    i.e., whenever s_t is visited from a different s_{t-1}, the network gets
-    a new gradient signal.  At convergence z(s) → expected accumulated trace.
-
-    This module also includes a Q-head so ET learning quality can be measured
-    independently from the main QRC agent.
-    """
-
-    feature_dim: int   # dimension of φ(s) and z(s)
+    feat_dim: int
     action_dim: int
 
     @nn.compact
-    def __call__(self, x):
-        # ── Encoder: obs → φ(s) ∈ R^{feature_dim} ──
-        no_batch = x.ndim < 4  # single obs (no batch dim)
+    def __call__(self, x_s):
+        no_batch = x_s.ndim == 1
         if no_batch:
-            x = x[None]
-        x = x.reshape(x.shape[0], -1)          # flatten spatial dims
-        phi = nn.Dense(128, name="enc_fc1")(x)
-        phi = nn.relu(phi)
-        phi = nn.Dense(self.feature_dim, name="enc_fc2")(phi)
-
-        # ── Trace network: φ(s) → z(s) ∈ R^{feature_dim} ──
-        # Trained to satisfy: z(s_t) ≈ φ(s_t) + γλ · z(s_{t-1})
-        z = nn.Dense(self.feature_dim, name="trace_fc1")(phi)
-        z = nn.relu(z)
-        z = nn.Dense(self.feature_dim, name="trace_fc2")(z)
-
-        # ── Q-head: z → Q_ET(s, ·) ∈ R^{action_dim} ──
-        q_et = nn.Dense(self.action_dim, name="et_head")(z)
-
+            x_s = x_s[None]
+        z = nn.Dense(self.action_dim * self.feat_dim, use_bias=False, name="Theta")(x_s)
+        z = z.reshape(z.shape[0], self.action_dim, self.feat_dim)
         if no_batch:
-            phi = phi.squeeze(0)
             z = z.squeeze(0)
-            q_et = q_et.squeeze(0)
+        return z  # shape (action_dim, feat_dim)
 
-        return phi, z, q_et
+
+# Map from env_type -> name of the Q-network's final linear Dense submodule.
+# This is the split point between the shared representation x(s) (everything
+# before it) and the head weights w (this layer) used in Algorithm 3.
+_HEAD_NAME_BY_ENV_TYPE = {
+    "octax": "Qhead",     # OctaxQNetwork: self.Qhead = nn.Dense(...)
+    "atari": "Dense_1",   # AtariQNetwork: nn.Dense(..., name="Dense_1")
+    "minatar": "Dense_1", # MinAtarQNetwork: second (unnamed -> auto "Dense_1") Dense
+}
+
+
+def get_head_name(agent_config) -> str:
+    if agent_config.d.get("et_head_name"):
+        return agent_config.et_head_name
+    try:
+        return _HEAD_NAME_BY_ENV_TYPE[agent_config.env_type]
+    except KeyError:
+        raise ValueError(
+            f"Don't know the head submodule name for env_type="
+            f"{agent_config.env_type!r}. Print jax.tree_util.tree_structure(q_params) "
+            f"to find it and pass --et-head-name explicitly."
+        )
 
 
 ###################################################################################
@@ -498,9 +519,8 @@ class AgentState(NamedTuple):
     h_trace: jnp.ndarray       # scalar trace for h
     grad_h_trace: jnp.ndarray  # gradient trace for h network
     grad_q_trace: jnp.ndarray  # gradient trace for Q network
-    # ── ET additions ──
-    et_state: TrainState       # ETModule (encoder + trace net + Q-head)
-    prev_z: jnp.ndarray        # z(s_{t-1}) stored from the previous step
+    # ── ET addition ──
+    et_state: TrainState       # ETProjection: Theta, s.t. z_theta(s) = Theta x(s)
 
 
 @partial(jax.jit, static_argnames=["action_dim"])
@@ -590,26 +610,34 @@ def init_agent_state_qrc_agent(
     grad_v_trace = jax.tree.map(jnp.zeros_like, train_states[1].params)
     h_trace = 0.0
 
-    # ── Initialise ET module ──
-    et_module = ETModule(
-        feature_dim=agent_config.et_feature_dim,
-        action_dim=action_dim,
+    # ── Initialise Theta (the ET projection) ──
+    # feat_dim must match the *actual* width of x(s), i.e. the input dimension
+    # of the Q-network's head layer -- not a separately-chosen hyperparameter,
+    # since Theta has to operate on the real x(s) extracted from q_grads.
+    q_params = train_states[0].params
+    head_name = get_head_name(agent_config)
+    head_kernel_shape = q_params["params"][head_name]["kernel"].shape  # (feat_dim, action_dim)
+    feat_dim = head_kernel_shape[0]
+    assert head_kernel_shape[1] == action_dim, (
+        f"Head submodule {head_name!r} kernel shape {head_kernel_shape} does not "
+        f"end in action_dim={action_dim}; get_head_name() picked the wrong layer."
     )
+
+    et_module = ETProjection(feat_dim=feat_dim, action_dim=action_dim)
     rng, _rng = jax.random.split(rng)
-    et_params = et_module.init(_rng, jnp.zeros(obs_shape))
+    et_params = et_module.init(_rng, jnp.zeros(feat_dim))
     et_state = TrainState.create(
         apply_fn=et_module.apply,
         params=et_params,
         tx=getattr(optax, agent_config.opt)(agent_config.et_lr),
     )
-    prev_z = jnp.zeros(agent_config.et_feature_dim)
-    print(f"ET module params: {params_sum(et_params)}")
+    print(f"ET Theta params: {params_sum(et_params)} (feat_dim={feat_dim}, head={head_name!r})")
 
     return (
         AgentState(
             agent_config, *train_states,
             h_trace, grad_h_trace, grad_v_trace,
-            et_state, prev_z,
+            et_state,
         ),
         rng,
     )
@@ -624,6 +652,14 @@ def update_q_trace(e_tmins1, rho_t, gamma, lamda, grad):
 def reset_trace(trace):
     return tree.zeros(trace)
 
+def replace_head_kernel(params_like_tree, head_name, new_kernel):
+    # Always work mutable first
+    flat = flax.core.unfreeze(params_like_tree)
+
+    flat["params"][head_name]["kernel"] = new_kernel
+
+    # Match original tree type exactly
+    return type(params_like_tree)(flat)
 
 ## Updates for QRC(λ) agent. Equations (26)-(28) in the paper
 @partial(jax.jit, static_argnames=["terminated", "truncated", "is_nongreedy"])
@@ -673,12 +709,58 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
         grad_q_trace_tm1, rho_t, config.gamma, config.lamda, q_grads
     )
 
-    # update q
+    # ================================================================
+    # EXPECTED ELIGIBILITY TRACE (ET): z_theta(s) = Theta x(s)
+    #
+    # x(s) is read directly out of q_grads: since the head is a linear layer
+    # q(s,a) = kernel[:, a] . x(s) + bias[a], d q(s,a)/d kernel[:, a] IS x(s).
+    # No second encoder, no extra forward pass -- this is exactly the
+    # "predecessor feature trick" from the ET paper's Atari section, applied
+    # to QRC's TDC/GTD2 trace instead of plain Q(lambda).
+    #
+    # Theta is regressed toward the REAL trace: grad_q_trace_t's own head
+    # -kernel column for the action just taken (Proposition 2's empirical-
+    # mean argument -- we fit z to samples of the true instantaneous trace).
+    #
+    # z_theta(s) is then spliced into the trace that is actually used for
+    # this step's Q-update (the delta * trace(grad q) term of TDC), for ALL
+    # actions -- not just the one taken. That's what buys ET's headline
+    # property: states/actions that weren't part of this transition still
+    # get updated, because Theta was already trained on earlier visits.
+    # ================================================================
+    et_state = agent_state.et_state
+    head_name = get_head_name(config)
+    x_s = q_grads["params"][head_name]["kernel"][:, action]  # = x(s)
+
+    et_trace_target = jax.lax.stop_gradient(
+        grad_q_trace_t["params"][head_name]["kernel"][:, action]
+    )
+
+    def et_loss_fn(et_params):
+        z = et_state.apply_fn(et_params, x_s)  # (action_dim, feat_dim)
+        trace_loss = jnp.mean((z[action] - et_trace_target) ** 2)
+        return trace_loss, z
+
+    (et_trace_loss, z_for_update), et_grads = jax.value_and_grad(
+        et_loss_fn, has_aux=True
+    )(et_state.params)
+    new_et_state = et_state.apply_gradients(grads=et_grads)
+
+    # z used in the Q-update should not receive gradient from the RL loss --
+    # Theta is only trained by et_loss_fn above (one forward+backward pass
+    # covers both: computing z_theta(s) and the regression grad for Theta).
+    z_head_kernel = jnp.transpose(jax.lax.stop_gradient(z_for_update))  # (feat_dim, action_dim)
+    grad_q_trace_for_update = replace_head_kernel(
+        grad_q_trace_t, head_name, z_head_kernel
+    )
+
+    # update q -- uses the ET-substituted trace instead of the raw
+    # instantaneous trace for the delta * trace(grad q) (TDC) term.
     q_update = tree.scale(-h_trace_t, td_error_grad)  # GTD2 update: -trace(h) * ∇δ
     if config.gradient_correction:
         # TDC update: GTD2 + gradient correction
         q_update = tree.add(
-            tree.scale(td_error, grad_q_trace_t),  # δ * trace(∇q)
+            tree.scale(td_error, grad_q_trace_for_update),  # δ * z_theta(s) (head) / trace (rest)
             tree.scale(-h_t, q_grads),  # -h * ∇q
             q_update,
         )
@@ -686,7 +768,11 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
         grads=tree.neg(q_update)
     )  # Flip sign because Flax multiplies by -1
 
-    # update h
+    # update h  (TODO/extension: ET is currently only applied to the Q-head's
+    # trace, per the paper's "predecessor feature trick" for the linear head.
+    # Applying it to h's trace as well is a reasonable next step but is a
+    # separate design decision the paper doesn't make for us -- QRC has two
+    # traces where Q(lambda) only has one.)
     delta_z_h = tree.scale(td_error, grad_h_trace_t)
     h_h_grad = tree.scale(-h_t, h_grads)
     beta_params = tree.scale(-config.reg_coeff, h_params)
@@ -706,67 +792,14 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
     q_update_l2 = optax.global_norm(q_update)
     h_update_l2 = optax.global_norm(h_update)
 
-    # ================================================================
-    # ET UPDATE
-    # The ET Bellman equation:
-    #   z(s_t) = φ(s_t) + γλ · E[z(s_{t-1}) | s_t]
-    #
-    # We train the ETModule with two losses:
-    #   1. Trace consistency: z(s_t) ≈ φ(s_t) + γλ · prev_z
-    #      Over time, averaging over many (s_{t-1}, s_t) pairs gives
-    #      the expected predecessor trace — the ET approximation.
-    #   2. Q prediction: Q_ET(s_t, a_t) ≈ R + γ·max Q(s_{t+1})
-    #      Measures whether ET features lead to good Q-value estimates.
-    # ================================================================
-    et_state = agent_state.et_state
-    prev_z = agent_state.prev_z
-
-    # Bootstrap target from the main Q-network (stop gradient — ET does not
-    # affect the main QRC network; QRC and ET train independently here)
-    next_q_main = jax.lax.stop_gradient(
-        train_state.apply_fn(train_state.params, next_obs)
-    )
-    next_q_max = jnp.max(next_q_main)
-
-    def et_loss_fn(et_params):
-        phi_t, z_t, q_et = et_state.apply_fn(et_params, obs)
-
-        # ── 1. Trace consistency loss (ET Bellman equation) ──
-        # Target: stop_gradient so it doesn't "chase itself"
-        trace_target = jax.lax.stop_gradient(
-            phi_t + config.gamma * config.lamda * prev_z
-        )
-        trace_loss = jnp.mean((z_t - trace_target) ** 2)
-
-        # ── 2. ET Q-prediction loss ──
-        td_target_et = jax.lax.stop_gradient(
-            reward + config.gamma * next_q_max * (1 - terminated)
-        )
-        et_q_loss = (td_target_et - q_et[action]) ** 2
-
-        total = et_q_loss + config.et_trace_coeff * trace_loss
-        return total, (z_t, q_et[action], td_target_et - q_et[action], trace_loss)
-
-    (_, et_aux), et_grads = jax.value_and_grad(et_loss_fn, has_aux=True)(
-        et_state.params
-    )
-    z_t, q_et_val, et_td_error, et_trace_loss = et_aux
-    new_et_state = et_state.apply_gradients(grads=et_grads)
-
-    # Update prev_z; reset on episode end / non-greedy (same rule as QRC traces)
-    prev_z_new = jax.lax.stop_gradient(z_t)
-    if terminated or truncated or is_nongreedy:
-        prev_z_new = jnp.zeros_like(prev_z_new)
-
     metrics = {
         "td_error": td_error,
         "q_val": q_val,
         "h_val": h_t,
         "q_update_l2": q_update_l2,
         "h_update_l2": h_update_l2,
-        "et_td_error": et_td_error,
-        "et_q_val": q_et_val,
         "et_trace_loss": et_trace_loss,
+        "et_z_norm": jnp.linalg.norm(z_for_update[action]),
     }
 
     return (
@@ -778,7 +811,6 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
             grad_h_trace_t,
             grad_q_trace_t,
             new_et_state,
-            prev_z_new,
         ),
         metrics,
     )
@@ -869,11 +901,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
 
             # Restore ET state if present in checkpoint (backwards compat)
             new_et_state = agent_state.et_state
-            restored_prev_z = agent_state.prev_z
             if "et_state" in checkpoint_data and checkpoint_data["et_state"] is not None:
                 new_et_state = restore_train_state(agent_state.et_state, checkpoint_data["et_state"])
-            if "prev_z" in checkpoint_data and checkpoint_data["prev_z"] is not None:
-                restored_prev_z = flax.serialization.from_bytes(agent_state.prev_z, checkpoint_data["prev_z"])
 
             agent_state = AgentState(
                 agent_config=agent_state.agent_config,
@@ -883,7 +912,6 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 grad_h_trace=grad_h_trace,
                 grad_q_trace=grad_q_trace,
                 et_state=new_et_state,
-                prev_z=restored_prev_z,
             )
 
             start_step = checkpoint_data["step"] + 1
@@ -956,9 +984,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 "h_values": float(metrics["h_val"]),
                 "q_update_l2": float(metrics["q_update_l2"]),
                 "h_update_l2": float(metrics["h_update_l2"]),
-                "et_td_error": float(metrics["et_td_error"]),
-                "et_q_val": float(metrics["et_q_val"]),
                 "et_trace_loss": float(metrics["et_trace_loss"]),
+                "et_z_norm": float(metrics["et_z_norm"]),
                 "SPS": sps,
                 "epsilon": epsilon,
                 "episodes": episodes,
@@ -976,9 +1003,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
                     "losses/h_values": log_dict["h_values"],
                     "updates/q_update_l2": log_dict["q_update_l2"],
                     "updates/h_update_l2": log_dict["h_update_l2"],
-                    "et/td_error": log_dict["et_td_error"],
-                    "et/q_val": log_dict["et_q_val"],
                     "et/trace_loss": log_dict["et_trace_loss"],
+                    "et/z_norm": log_dict["et_z_norm"],
                     "episodes": episodes,
                 },
                 step=t,
@@ -1009,7 +1035,6 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 "grad_h_trace": flax.serialization.to_bytes(agent_state.grad_h_trace),
                 "grad_q_trace": flax.serialization.to_bytes(agent_state.grad_q_trace),
                 "et_state": save_train_state(agent_state.et_state),
-                "prev_z": flax.serialization.to_bytes(agent_state.prev_z),
                 "rng": rng,
                 "episodes": episodes,
                 "episode_return": episode_return,
