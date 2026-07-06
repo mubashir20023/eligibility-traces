@@ -125,6 +125,14 @@ class Args:
     between the shared representation x(s) and the head weights w in Algorithm 3
     of the ET paper. Auto-detected from env_type if left as None; override only if
     you know your net_arch names its last layer differently."""
+    et_eta: float = 0.0
+    """ET(lambda, eta) mixing coefficient (Eq. 3 in the ET paper). eta=0 uses the
+    pure learned expected trace z_theta(s) (this is what "ET(lambda)" means
+    throughout most of the paper's experiments). eta=1 recovers plain TD(lambda)
+    (no ET effect on the head at all). Values in between recursively mix the
+    learned trace with the instantaneous one: y_t = (1-eta)*z_theta(s_t) +
+    eta*(gamma*lambda*y_{t-1} + grad_q(s,a)) -- note y_{t-1} here is the PREVIOUS
+    MIXED trace, not the plain instantaneous trace, per Eq. 3 of the paper."""
 
 
 class OctaxToGymAdapter(gym.Env):
@@ -521,6 +529,7 @@ class AgentState(NamedTuple):
     grad_q_trace: jnp.ndarray  # gradient trace for Q network
     # ── ET addition ──
     et_state: TrainState       # ETProjection: Theta, s.t. z_theta(s) = Theta x(s)
+    et_y_trace: jnp.ndarray    # persistent mixture trace y_t (Eq. 3), head-kernel shaped
 
 
 @partial(jax.jit, static_argnames=["action_dim"])
@@ -633,11 +642,13 @@ def init_agent_state_qrc_agent(
     )
     print(f"ET Theta params: {params_sum(et_params)} (feat_dim={feat_dim}, head={head_name!r})")
 
+    et_y_trace = jnp.zeros(head_kernel_shape)  # (feat_dim, action_dim)
+
     return (
         AgentState(
             agent_config, *train_states,
             h_trace, grad_h_trace, grad_v_trace,
-            et_state,
+            et_state, et_y_trace,
         ),
         rng,
     )
@@ -652,14 +663,33 @@ def update_q_trace(e_tmins1, rho_t, gamma, lamda, grad):
 def reset_trace(trace):
     return tree.zeros(trace)
 
+
 def replace_head_kernel(params_like_tree, head_name, new_kernel):
-    # Always work mutable first
-    flat = flax.core.unfreeze(params_like_tree)
+    """Return a copy of `params_like_tree` (anything with the same pytree
+    structure as q_params, e.g. an eligibility-trace pytree) with the kernel
+    leaf of `head_name` swapped out for `new_kernel`. This is how z_theta(s)
+    gets spliced into the trace used for the Q-update: every other leaf
+    (conv trunk, Qproj, head bias) keeps using the ordinary instantaneous
+    trace untouched -- only the head's weight-column trace is replaced.
 
-    flat["params"][head_name]["kernel"] = new_kernel
+    NOTE: this uses jax.tree_util.tree_map_with_path instead of manually
+    unfreezing/rebuilding with flax.core.freeze() or type(x)(...). Manual
+    rebuilding depends on flax-version-specific behavior for how deeply
+    FrozenDict/dict get reconstructed, which is NOT consistent across flax
+    versions (this caused a real "Custom node type mismatch" error). Using
+    tree_map_with_path walks the tree via its own registered structure and
+    only swaps the one target leaf, so the result is guaranteed to have
+    exactly the same pytree type/structure as the input, on any flax
+    version, with no manual reconstruction at all."""
 
-    # Match original tree type exactly
-    return type(params_like_tree)(flat)
+    def _maybe_replace(path, leaf):
+        keys = tuple(getattr(p, "key", getattr(p, "name", None)) for p in path)
+        if keys == ("params", head_name, "kernel"):
+            return new_kernel
+        return leaf
+
+    return jax.tree_util.tree_map_with_path(_maybe_replace, params_like_tree)
+
 
 ## Updates for QRC(λ) agent. Equations (26)-(28) in the paper
 @partial(jax.jit, static_argnames=["terminated", "truncated", "is_nongreedy"])
@@ -746,10 +776,21 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
     )(et_state.params)
     new_et_state = et_state.apply_gradients(grads=et_grads)
 
-    # z used in the Q-update should not receive gradient from the RL loss --
-    # Theta is only trained by et_loss_fn above (one forward+backward pass
-    # covers both: computing z_theta(s) and the regression grad for Theta).
-    z_head_kernel = jnp.transpose(jax.lax.stop_gradient(z_for_update))  # (feat_dim, action_dim)
+    # ── ET(lambda, eta) mixing (Eq. 3): the REAL recursive mixture trace ──
+    # y_t = (1-eta) * z_theta(s_t)  +  eta * (gamma*lambda*y_{t-1} + grad_q(s,a))
+    # Note y_{t-1} is the PREVIOUS MIXED trace (agent_state.et_y_trace), not
+    # the plain instantaneous trace -- this is what makes it a genuine second
+    # recursive trace rather than a per-step snapshot blend. eta=0 recovers
+    # the pure z_theta(s) substitution (what "ET(lambda)" means in the
+    # paper's main experiments); eta=1 recovers plain TD(lambda) (no ET
+    # effect on the head at all).
+    y_tm1 = agent_state.et_y_trace
+    head_grad_t = q_grads["params"][head_name]["kernel"]  # (feat_dim, action_dim)
+    z_full = jnp.transpose(jax.lax.stop_gradient(z_for_update))  # (feat_dim, action_dim)
+    eta = config.et_eta
+    y_t = (1 - eta) * z_full + eta * (rho_t * config.gamma * config.lamda * y_tm1 + head_grad_t)
+
+    z_head_kernel = y_t
     grad_q_trace_for_update = replace_head_kernel(
         grad_q_trace_t, head_name, z_head_kernel
     )
@@ -787,6 +828,7 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
         h_trace_t = reset_trace(h_trace_t)
         grad_h_trace_t = reset_trace(grad_h_trace_t)
         grad_q_trace_t = reset_trace(grad_q_trace_t)
+        y_t = reset_trace(y_t)
 
     # Calculate L2 norms for logging
     q_update_l2 = optax.global_norm(q_update)
@@ -811,6 +853,7 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
             grad_h_trace_t,
             grad_q_trace_t,
             new_et_state,
+            y_t,
         ),
         metrics,
     )
@@ -903,6 +946,11 @@ def experiment(args: Args, agent: Agent, run_name: str):
             new_et_state = agent_state.et_state
             if "et_state" in checkpoint_data and checkpoint_data["et_state"] is not None:
                 new_et_state = restore_train_state(agent_state.et_state, checkpoint_data["et_state"])
+            new_et_y_trace = agent_state.et_y_trace
+            if "et_y_trace" in checkpoint_data and checkpoint_data["et_y_trace"] is not None:
+                new_et_y_trace = flax.serialization.from_bytes(
+                    agent_state.et_y_trace, checkpoint_data["et_y_trace"]
+                )
 
             agent_state = AgentState(
                 agent_config=agent_state.agent_config,
@@ -912,6 +960,7 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 grad_h_trace=grad_h_trace,
                 grad_q_trace=grad_q_trace,
                 et_state=new_et_state,
+                et_y_trace=new_et_y_trace,
             )
 
             start_step = checkpoint_data["step"] + 1
@@ -1034,6 +1083,7 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 "h_trace": flax.serialization.to_bytes(agent_state.h_trace),
                 "grad_h_trace": flax.serialization.to_bytes(agent_state.grad_h_trace),
                 "grad_q_trace": flax.serialization.to_bytes(agent_state.grad_q_trace),
+                "et_y_trace": flax.serialization.to_bytes(agent_state.et_y_trace),
                 "et_state": save_train_state(agent_state.et_state),
                 "rng": rng,
                 "episodes": episodes,
