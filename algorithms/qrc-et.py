@@ -118,21 +118,41 @@ class Args:
     """whether to resume from the last checkpoint if available"""
     use_spr: bool = False
     """whether to use SPR (Self-Predictive Representations)"""
-    et_lr: float = 1e-4
-    """learning rate for the expected-trace projection Theta (z_theta(s) = Theta x(s))"""
+    et_lr: float = 0.1
+    """learning rate for the expected-trace projection Theta (z_theta(s) = Theta x(s)).
+    FIX: was 1e-4 (same as q_lr). The ET paper (van Hasselt et al. 2021) is explicit
+    that Theta needs a much faster step size than the main network to track its
+    non-stationary target during control -- "the expected trace parameters Theta
+    ... were updated with a step size of beta = 0.1" (main text; Appendix confirms
+    beta=0.1 for all Atari experiments). At 1e-4, Theta barely moves from its
+    near-zero init for a long time, so with et_eta=0.0 (pure substitution) the
+    head's trace-based credit assignment was effectively starved for a large
+    fraction of training -- this alone was enough to make ET(lambda) perform
+    worse than plain QRC."""
     et_head_name: Optional[str] = None
     """name of the Q-network's final (linear) Dense submodule, i.e. the split point
     between the shared representation x(s) and the head weights w in Algorithm 3
     of the ET paper. Auto-detected from env_type if left as None; override only if
     you know your net_arch names its last layer differently."""
-    et_eta: float = 0.0
+    et_eta: float = 0.3
     """ET(lambda, eta) mixing coefficient (Eq. 3 in the ET paper). eta=0 uses the
     pure learned expected trace z_theta(s) (this is what "ET(lambda)" means
     throughout most of the paper's experiments). eta=1 recovers plain TD(lambda)
     (no ET effect on the head at all). Values in between recursively mix the
     learned trace with the instantaneous one: y_t = (1-eta)*z_theta(s_t) +
     eta*(gamma*lambda*y_{t-1} + grad_q(s,a)) -- note y_{t-1} here is the PREVIOUS
-    MIXED trace, not the plain instantaneous trace, per Eq. 3 of the paper."""
+    MIXED trace, not the plain instantaneous trace, per Eq. 3 of the paper.
+    CHANGE: default was 0.0 (pure substitution). At eta=0, the head's trace has
+    NO fallback to the real instantaneous trace at all while Theta is still
+    learning, which compounds the et_lr issue above -- early in training the
+    head gets close to zero usable trace signal from either source. eta=0.3
+    keeps some real trace flowing to the head from step one (so learning is
+    never worse than a partial-strength QRC), while still letting the learned
+    counterfactual component contribute once Theta has had time to converge.
+    This is a value to sweep (try 0, 0.3, 0.5, 0.7, 1.0) rather than a fix in
+    itself -- the et_lr change above is the one change with direct textual
+    support from the paper; this default is a reasonable starting point for
+    the sweep the paper's own eta parameter exists to enable."""
 
 
 class OctaxToGymAdapter(gym.Env):
