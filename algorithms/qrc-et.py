@@ -118,14 +118,14 @@ class Args:
     """whether to resume from the last checkpoint if available"""
     use_spr: bool = False
     """whether to use SPR (Self-Predictive Representations)"""
-    et_lr: float = 1e-4
+    et_lr: float = 0.1
     """learning rate for the expected-trace projection Theta (z_theta(s) = Theta x(s))"""
     et_head_name: Optional[str] = None
     """name of the Q-network's final (linear) Dense submodule, i.e. the split point
     between the shared representation x(s) and the head weights w in Algorithm 3
     of the ET paper. Auto-detected from env_type if left as None; override only if
     you know your net_arch names its last layer differently."""
-    et_eta: float = 0.0
+    et_eta: float = 0.3
     """ET(lambda, eta) mixing coefficient (Eq. 3 in the ET paper). eta=0 uses the
     pure learned expected trace z_theta(s) (this is what "ET(lambda)" means
     throughout most of the paper's experiments). eta=1 recovers plain TD(lambda)
@@ -790,20 +790,8 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
     eta = config.et_eta
     y_t = (1 - eta) * z_full + eta * (rho_t * config.gamma * config.lamda * y_tm1 + head_grad_t)
 
-    # FIX: only splice the ET-mixed trace (y_t) into the column for the
-    # action actually taken this step. Previously the WHOLE matrix (every
-    # action column) was overwritten by y_t every step, including columns
-    # for actions not taken. Since Theta's prediction for those untaken
-    # columns doesn't decay the way the ordinary accumulating trace does
-    # (it just settles to whatever Theta currently outputs, and Theta's
-    # output doesn't go to zero on its own), this injected a permanent,
-    # non-decaying forcing term into every unused action's weights, every
-    # step -- scaling with action count (mostly harmless at 3 actions,
-    # catastrophic at 5-6). Every other column now keeps using the
-    # ordinary accumulating trace (grad_q_trace_t), which already decays
-    # to zero for actions not recently taken, exactly as it should.
-    head_trace_full = grad_q_trace_t["params"][head_name]["kernel"]  # (feat_dim, action_dim)
-    y_col = y_t[:, action]  # ET-mixed value for just this step's action
+    head_trace_full = grad_q_trace_t["params"][head_name]["kernel"]
+    y_col = y_t[:, action]
     z_head_kernel = head_trace_full.at[:, action].set(y_col)
     grad_q_trace_for_update = replace_head_kernel(
         grad_q_trace_t, head_name, z_head_kernel
