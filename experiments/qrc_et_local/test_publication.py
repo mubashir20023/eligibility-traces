@@ -49,6 +49,15 @@ class PublicationTests(unittest.TestCase):
             self.assertIn("border-bottom", rendered)
             self.assertNotIn("<script", rendered)
 
+    def test_headers_align_with_their_column_values(self):
+        rendered = table_html({"title": "Alignment", "headers": ["Game", "Seed", "Score", "Trace loss"],
+                               "rows": [["Asterix", "601", "3.44", "N/A"],
+                                        ["Asterix", "601", "4.15", "0.066702"]]})
+        self.assertIn('<th scope="col" class="text">Game</th>', rendered)
+        for header in ["Seed", "Score", "Trace loss"]:
+            self.assertIn(f'<th scope="col" class="numeric">{header}</th>', rendered)
+        self.assertIn("th.numeric{text-align:right}", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,7 +47,12 @@ def table_html(part):
     def clean(value):
         return html.escape(str(value).replace("**", "").replace("`", ""))
     headers = part["headers"]
-    cells = "".join(f'<th scope="col">{clean(h)}</th>' for h in headers)
+    numeric_columns = []
+    for index in range(len(headers)):
+        values = [row[index] for row in part["rows"] if row[index] not in {"", "N/A"}]
+        numeric_columns.append(bool(values) and all(re.fullmatch(r"[+\-]?[\d,.]+", v) for v in values))
+    cells = "".join(f'<th scope="col" class="{"numeric" if numeric else "text"}">{clean(h)}</th>'
+                    for h, numeric in zip(headers, numeric_columns))
     rows = []
     for row in part["rows"]:
         rendered = []
@@ -70,6 +75,7 @@ table{border-collapse:separate;border-spacing:0;width:100%;table-layout:auto;
 border:1px solid #cdd6df;border-radius:4px;overflow:hidden}
 thead{background:#eef3f7}th{font-size:13px;font-weight:700;color:#344453;
 padding:13px 14px;text-align:left;vertical-align:middle;border-bottom:2px solid #c8d3de}
+th.numeric{text-align:right}
 td{padding:12px 14px;border-bottom:1px solid #e0e6ed;vertical-align:middle;overflow-wrap:anywhere}
 tbody tr:nth-child(even){background:#f7f9fb}tbody tr:last-child td{border-bottom:0}
 td:first-child{font-weight:600}th,td{min-width:0}td.numeric{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
