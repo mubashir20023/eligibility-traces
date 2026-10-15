@@ -144,7 +144,7 @@ The next useful question is whether action conditioning or prediction timing imp
 
 ## Reproduction and Evidence
 
-[Reviewed code, CSVs and instructions](https://github.com/mubashir20023/eligibility-traces/tree/codex/qrc-et-local-screen). The new agent filename is `algorithms/qrc-et-algo3-lab.py`; its flags are explicit in the reproduction instructions. Do not overwrite the cluster's R27 agent.
+[Reviewed code, CSVs and instructions](https://github.com/mubashir20023/eligibility-traces/tree/local-experiment-on-et). The new agent filename is `algorithms/qrc-et-algo3-lab.py`; its flags are explicit in the reproduction instructions. Do not overwrite the cluster's R27 agent.
 
 All 12 imported result histories are complete. The export independently reconciled **16,000 rolling-return records with 216,716 episode records**. Counts include overlapping Breakout prefixes and are audit-work counts, not independent samples. Exported CSVs retain every 1k-step sample. W&B plots receive every 5k-step sample without additional smoothing; scores and diagnostics use the full 1k-step CSVs.
 

@@ -2,7 +2,7 @@
   "url": "https://wandb.ai/mubbashirahmed/qrc-et-algo3-minatar/reports/QRC-vs-Experimental-QRC-ET-|-Five-Game-Screen-and-Breakout-Follow-up--VmlldzoxODExNTc2Nw==",
   "forge_url": "https://forge.coreweave.com/wandb/mubbashirahmed/qrc-et-algo3-minatar/reports/QRC-vs-Experimental-QRC-ET-|-Five-Game-Screen-and-Breakout-Follow-up--VmlldzoxODExNTc2Nw==",
   "report_id": "VmlldzoxODExNTc2Nw==",
-  "github": "https://github.com/mubashir20023/eligibility-traces/tree/codex/qrc-et-local-screen",
+  "github": "https://github.com/mubashir20023/eligibility-traces/tree/local-experiment-on-et",
   "run_ids": [
     "localet261015_asterix_1m_qrc",
     "localet261015_asterix_1m_et_state_nlms",
