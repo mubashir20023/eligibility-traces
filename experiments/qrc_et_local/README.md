@@ -83,6 +83,21 @@ The recorded runtime was CPU JAX 0.11.2, flax 0.12.10, optax 0.2.8,
 numpy 2.5.4, gymnasium 0.29.1 and MinAtar 1.0.15. These are the observed versions,
 not a claim that arbitrary newer dependency combinations reproduce the runs.
 
+## Report tables
+
+`report_tables.py` turns the reviewed report tables into responsive HTML media
+for W&B. The combined-seed summary is within each game, not across games. Only
+seed 601 is currently available for this candidate, so n=1 and combined means
+equal the individual result; no between-seed uncertainty can be estimated.
+The individual tables show score, curve average, measured training minutes,
+sampled TD squared error and trace regression loss. QRC trace loss is N/A.
+
+The generated `tables/*.html` are presentation artifacts, not training inputs.
+W&B stores them in a separate presentation-only run; the 12 imported experiment
+histories are not changed. `TABLE_LAYOUT_AUDIT.json` records 42 local rendering
+checks: 14 tables at 1440px, 900px and 390px, without horizontal overflow or
+clipped cell text. This verifies the local table content, not the full W&B UI.
+
 ## Publishing and appending
 
 `publish_wandb.py --push --key-file PATH --github URL` creates the new report

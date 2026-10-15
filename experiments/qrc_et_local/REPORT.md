@@ -12,13 +12,34 @@ Only **QRC and this experimental QRC-ET** appear here. The historical research r
 
 Seed **601**, learning rate **0.002**, matched initialization and exploration keys. Final-window scores average the logged rolling-100-episode return over **900k < step <= 1M**. These are training returns, not independent policy evaluations.
 
-| Game | QRC | Experimental ET | ET - QRC |
-| --- | --- | --- | --- |
-| Asterix | 3.44 | 4.15 | +0.71 |
-| Breakout | 9.67 | 8.51 | -1.16 |
-| Freeway | 22.08 | 23.82 | +1.74 |
-| Seaquest | 0.15 | 0.51 | +0.36 |
-| SpaceInvaders | 23.71 | 25.66 | +1.96 |
+**Combined available seeds, within each game:** only seed 601 is currently available for this experimental agent (n=1). The combined mean therefore equals its individual result; between-seed variation and confidence intervals cannot be estimated. Historical seeds from other ET variants are not pooled into this comparison.
+
+| Game | Matched seeds (n) | QRC mean score | ET mean score | ET - QRC |
+| --- | --- | --- | --- | --- |
+| Asterix | 1 | 3.44 | 4.15 | +0.71 |
+| Breakout | 1 | 9.67 | 8.51 | -1.16 |
+| Freeway | 1 | 22.08 | 23.82 | +1.74 |
+| Seaquest | 1 | 0.15 | 0.51 | +0.36 |
+| SpaceInvaders | 1 | 23.71 | 25.66 | +1.96 |
+
+### All Five Games | Individual Seed Details
+
+| Game | Seed | Method | Score | Curve avg. | Time (min) | TD squared | Trace loss |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Asterix | 601 | QRC | 3.44 | 1.692 | 27.3 | 0.041081 | N/A |
+| Asterix | 601 | Experimental ET | 4.15 | 2.048 | 36.6 | 0.032476 | 0.066702 |
+| Breakout | 601 | QRC | 9.67 | 5.135 | 29.4 | 0.041256 | N/A |
+| Breakout | 601 | Experimental ET | 8.51 | 4.719 | 34.4 | 0.013440 | 0.188470 |
+| Freeway | 601 | QRC | 22.08 | 9.429 | 29.5 | 0.010575 | N/A |
+| Freeway | 601 | Experimental ET | 23.82 | 9.471 | 38.2 | 0.013813 | 0.005960 |
+| Seaquest | 601 | QRC | 0.15 | 0.252 | 31.3 | 0.024695 | N/A |
+| Seaquest | 601 | Experimental ET | 0.51 | 0.444 | 36.9 | 0.008265 | 0.047175 |
+| SpaceInvaders | 601 | QRC | 23.71 | 14.832 | 30.0 | 0.037548 | N/A |
+| SpaceInvaders | 601 | Experimental ET | 25.66 | 14.951 | 34.9 | 0.008840 | 0.102025 |
+
+Time is measured training wall time including initialization/compilation, not W&B import runtime. TD squared and trace loss are final-window means of samples every 1k steps, not every transition. N/A means QRC has no learned trace predictor; it does not mean zero loss. Lower diagnostic loss alone does not establish better control.
+
+
 
 The two overview graphs use the same game colors and axes. Raw game rewards have different meanings; they are shown together for orientation, not averaged or ranked across games.
 
@@ -28,33 +49,68 @@ The two overview graphs use the same game colors and axes. Raw game rewards have
 
 QRC is on the left, experimental QRC-ET on the right. Each pair uses identical step and reward scales. No confidence bands are shown because there is one seed.
 
-### Asterix
+### Asterix | Seed 601
 
 Final-window return: **3.44 vs 4.15** (ET - QRC **+0.71**). Whole-budget curve averages: **1.692 vs 2.048**. Higher endpoint and curve average in this seed; generalization is untested.
 
+| Seed | Method | Score | Curve avg. | Time (min) | TD squared | Trace loss |
+| --- | --- | --- | --- | --- | --- | --- |
+| 601 | QRC | 3.44 | 1.692 | 27.3 | 0.041081 | N/A |
+| 601 | Experimental ET | 4.15 | 2.048 | 36.6 | 0.032476 | 0.066702 |
+
+Available paired seeds: **601 (n=1)**. Combined-seed means equal this seed's values; no between-seed spread is available.
+
 [Interactive paired graphs: Asterix]
 
-### Breakout
+### Breakout | Seed 601
 
 Final-window return: **9.67 vs 8.51** (ET - QRC **-1.16**). Whole-budget curve averages: **5.135 vs 4.719**. Both endpoint and curve average remain lower than QRC; the 3M follow-up below checks persistence.
 
+| Seed | Method | Score | Curve avg. | Time (min) | TD squared | Trace loss |
+| --- | --- | --- | --- | --- | --- | --- |
+| 601 | QRC | 9.67 | 5.135 | 29.4 | 0.041256 | N/A |
+| 601 | Experimental ET | 8.51 | 4.719 | 34.4 | 0.013440 | 0.188470 |
+
+Available paired seeds: **601 (n=1)**. Combined-seed means equal this seed's values; no between-seed spread is available.
+
 [Interactive paired graphs: Breakout]
 
-### Freeway
+### Freeway | Seed 601
 
 Final-window return: **22.08 vs 23.82** (ET - QRC **+1.74**). Whole-budget curve averages: **9.429 vs 9.471**. The endpoint gain is larger than the very small whole-budget curve-average gain.
 
+| Seed | Method | Score | Curve avg. | Time (min) | TD squared | Trace loss |
+| --- | --- | --- | --- | --- | --- | --- |
+| 601 | QRC | 22.08 | 9.429 | 29.5 | 0.010575 | N/A |
+| 601 | Experimental ET | 23.82 | 9.471 | 38.2 | 0.013813 | 0.005960 |
+
+Available paired seeds: **601 (n=1)**. Combined-seed means equal this seed's values; no between-seed spread is available.
+
 [Interactive paired graphs: Freeway]
 
-### Seaquest
+### Seaquest | Seed 601
 
 Final-window return: **0.15 vs 0.51** (ET - QRC **+0.36**). Whole-budget curve averages: **0.252 vs 0.444**. Experimental ET is higher, but absolute returns remain low for both methods.
 
+| Seed | Method | Score | Curve avg. | Time (min) | TD squared | Trace loss |
+| --- | --- | --- | --- | --- | --- | --- |
+| 601 | QRC | 0.15 | 0.252 | 31.3 | 0.024695 | N/A |
+| 601 | Experimental ET | 0.51 | 0.444 | 36.9 | 0.008265 | 0.047175 |
+
+Available paired seeds: **601 (n=1)**. Combined-seed means equal this seed's values; no between-seed spread is available.
+
 [Interactive paired graphs: Seaquest]
 
-### SpaceInvaders
+### SpaceInvaders | Seed 601
 
 Final-window return: **23.71 vs 25.66** (ET - QRC **+1.96**). Whole-budget curve averages: **14.832 vs 14.951**. The endpoint gain is accompanied by only a small whole-budget curve-average gain.
+
+| Seed | Method | Score | Curve avg. | Time (min) | TD squared | Trace loss |
+| --- | --- | --- | --- | --- | --- | --- |
+| 601 | QRC | 23.71 | 14.832 | 30.0 | 0.037548 | N/A |
+| 601 | Experimental ET | 25.66 | 14.951 | 34.9 | 0.008840 | 0.102025 |
+
+Available paired seeds: **601 (n=1)**. Combined-seed means equal this seed's values; no between-seed spread is available.
 
 [Interactive paired graphs: SpaceInvaders]
 
@@ -72,12 +128,14 @@ The deficit grows from -1.16 at 1M to -3.38 at 3M. Longer training alone did not
 
 [Interactive paired graphs: Breakout | 3M]
 
-### Breakout Performance and Runtime
+### Breakout | 3M | Seed 601 Metrics
 
-| Method | Final-window return | Curve average | Run minutes |
-| --- | --- | --- | --- |
-| QRC | 14.18 | 10.153 | 75.5 |
-| Experimental QRC-ET | 10.81 | 8.283 | 97.4 |
+| Seed | Method | Score | Curve avg. | Time (min) | TD squared | Trace loss |
+| --- | --- | --- | --- | --- | --- | --- |
+| 601 | QRC | 14.18 | 10.153 | 75.5 | 0.052241 | N/A |
+| 601 | Experimental ET | 10.81 | 8.283 | 97.4 | 0.005895 | 0.173820 |
+
+Available paired seeds: **601 (n=1)**; combined-seed means are identical.
 
 Final-window sampled TD squared error is **0.052241 for QRC** versus **0.005895 for experimental ET**. ET trace regression loss is **0.173820**. Its lower sampled TD error does **not** imply better control; its training return is lower.
 

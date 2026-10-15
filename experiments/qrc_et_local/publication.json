@@ -18,7 +18,11 @@
     "localet261015_breakout_3m_et_state_nlms"
   ],
   "run_count": 12,
-  "panel_count": 14,
+  "panel_count": 28,
+  "graph_panel_count": 14,
+  "table_panel_count": 14,
+  "tables_run_id": "localet261015_tables_2b4f14c56bec",
+  "table_digest": "2b4f14c56bec67e6f3814b4ff689429c9a5686a004279d6a2e3e725da983d260",
   "width": "fluid",
   "verified": true
 }

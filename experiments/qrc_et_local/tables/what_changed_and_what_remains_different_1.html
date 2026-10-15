@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>What Changed and What Remains Different</title><style>
+*{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#202933;
+font:14px/1.5 Arial,Helvetica,sans-serif;letter-spacing:0}
+main{padding:10px 14px 16px;max-width:100%;width:100%}
+table{border-collapse:separate;border-spacing:0;width:100%;table-layout:auto;
+border:1px solid #cdd6df;border-radius:4px;overflow:hidden}
+thead{background:#eef3f7}th{font-size:13px;font-weight:700;color:#344453;
+padding:13px 14px;text-align:left;vertical-align:middle;border-bottom:2px solid #c8d3de}
+td{padding:12px 14px;border-bottom:1px solid #e0e6ed;vertical-align:middle;overflow-wrap:anywhere}
+tbody tr:nth-child(even){background:#f7f9fb}tbody tr:last-child td{border-bottom:0}
+td:first-child{font-weight:600}th,td{min-width:0}td.numeric{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.positive,.et{color:#006e58;font-weight:700}.negative{color:#a52e46;font-weight:700}.qrc{color:#245cc4;font-weight:700}
+@media(max-width:900px){main{padding:6px}th,td{padding:10px 8px}}
+@media(max-width:620px){thead{display:none}table,tbody,tr,td{display:block;width:100%}
+table{border:0;border-radius:0}tr{border:1px solid #cdd6df;margin-bottom:12px}
+td{display:grid;grid-template-columns:minmax(110px,42%) minmax(0,1fr);gap:12px;text-align:right;padding:8px 12px}
+td:before{content:attr(data-label);font-weight:600;text-align:left;color:#526170}
+td.numeric{white-space:normal}tbody tr:last-child td,tbody td:last-child{border-bottom:0}}
+</style></head><body><main><table aria-label="What Changed and What Remains Different"><thead><tr><th scope="col">Item</th><th scope="col">Implemented behavior</th><th scope="col">Interpretation</th></tr></thead><tbody><tr><td data-label="Item" class="">Shared representation</td><td data-label="Implemented behavior" class="">Linear Theta uses Q-head features; ET loss does not train the trunk</td><td data-label="Interpretation" class="">No separate deep trace network</td></tr><tr><td data-label="Item" class="">Algorithm 3 recursion</td><td data-label="Implemented behavior" class="">Full final-layer e^w target; mixed trace enters subsequent QRC updates</td><td data-label="Interpretation" class="">ET genuinely influences Q weights</td></tr><tr><td data-label="Item" class="">Line 15 target</td><td data-label="Implemented behavior" class="">Use e^w, consistent with main-text p.5 and appendix explanation</td><td data-label="Interpretation" class="">Already in supplied agent; apparent typo interpretation, not a new fix</td></tr><tr><td data-label="Item" class="">Paired RNG</td><td data-label="Implemented behavior" class="">Same initial Q/h weights, environment seed and exploration key</td><td data-label="Interpretation" class="">Prevents an extra Theta key split from changing the control stream</td></tr><tr><td data-label="Item" class="">New predictor initialization</td><td data-label="Implemented behavior" class="">Theta starts at zero and then learns</td><td data-label="Interpretation" class="">Tested jointly with normalization; effect not isolated</td></tr><tr><td data-label="Item" class="">New predictor update</td><td data-label="Implemented behavior" class="">Normalize Theta gradients by feature energy</td><td data-label="Interpretation" class="">Optimization variant, not demonstrated mechanism accuracy</td></tr><tr><td data-label="Item" class="">Current action input</td><td data-label="Implemented behavior" class="">Disabled in tested candidate</td><td data-label="Interpretation" class="">Predicting all action columns is not conditioning on current action</td></tr><tr><td data-label="Item" class="">Prediction ordering</td><td data-label="Implemented behavior" class="">Pre-Theta-update prediction in tested candidate</td><td data-label="Interpretation" class="">Paper places the mixture after Theta update</td></tr><tr><td data-label="Item" class="">Base learner</td><td data-label="Implemented behavior" class="">Retains QRC gradient correction; substitutes head-kernel trace only</td><td data-label="Interpretation" class="">Adaptation, not exact paper QET reproduction</td></tr></tbody></table></main></body></html>

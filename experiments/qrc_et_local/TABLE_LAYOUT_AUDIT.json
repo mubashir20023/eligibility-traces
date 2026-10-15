@@ -1,0 +1,385 @@
+{
+  "passed": true,
+  "checked": 42,
+  "failures": [],
+  "layouts": [
+    {
+      "name": "all_five_games_1m_steps_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 279,
+      "tableWidth": 1412
+    },
+    {
+      "name": "all_five_games_1m_steps_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 253,
+      "tableWidth": 888
+    },
+    {
+      "name": "all_five_games_1m_steps_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 1011,
+      "tableWidth": 378
+    },
+    {
+      "name": "all_five_games_individual_seed_details_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 11,
+      "tableHeight": 509,
+      "tableWidth": 1412
+    },
+    {
+      "name": "all_five_games_individual_seed_details_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 11,
+      "tableHeight": 463,
+      "tableWidth": 888
+    },
+    {
+      "name": "all_five_games_individual_seed_details_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 11,
+      "tableHeight": 3163,
+      "tableWidth": 378
+    },
+    {
+      "name": "asterix_seed_601_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 141,
+      "tableWidth": 1412
+    },
+    {
+      "name": "asterix_seed_601_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 127,
+      "tableWidth": 888
+    },
+    {
+      "name": "asterix_seed_601_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 552,
+      "tableWidth": 378
+    },
+    {
+      "name": "breakout_3m_seed_601_metrics_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 141,
+      "tableWidth": 1412
+    },
+    {
+      "name": "breakout_3m_seed_601_metrics_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 127,
+      "tableWidth": 888
+    },
+    {
+      "name": "breakout_3m_seed_601_metrics_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 552,
+      "tableWidth": 378
+    },
+    {
+      "name": "breakout_seed_601_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 141,
+      "tableWidth": 1412
+    },
+    {
+      "name": "breakout_seed_601_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 127,
+      "tableWidth": 888
+    },
+    {
+      "name": "breakout_seed_601_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 552,
+      "tableWidth": 378
+    },
+    {
+      "name": "breakout_the_gap_persists_at_3m_steps_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 4,
+      "tableHeight": 187,
+      "tableWidth": 1412
+    },
+    {
+      "name": "breakout_the_gap_persists_at_3m_steps_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 4,
+      "tableHeight": 169,
+      "tableWidth": 888
+    },
+    {
+      "name": "breakout_the_gap_persists_at_3m_steps_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 4,
+      "tableHeight": 492,
+      "tableWidth": 378
+    },
+    {
+      "name": "freeway_seed_601_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 141,
+      "tableWidth": 1412
+    },
+    {
+      "name": "freeway_seed_601_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 127,
+      "tableWidth": 888
+    },
+    {
+      "name": "freeway_seed_601_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 552,
+      "tableWidth": 378
+    },
+    {
+      "name": "learning_efficiency_diagnostics_and_cost_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 279,
+      "tableWidth": 1412
+    },
+    {
+      "name": "learning_efficiency_diagnostics_and_cost_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 253,
+      "tableWidth": 888
+    },
+    {
+      "name": "learning_efficiency_diagnostics_and_cost_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 822,
+      "tableWidth": 378
+    },
+    {
+      "name": "learning_efficiency_diagnostics_and_cost_2.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 279,
+      "tableWidth": 1412
+    },
+    {
+      "name": "learning_efficiency_diagnostics_and_cost_2.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 253,
+      "tableWidth": 888
+    },
+    {
+      "name": "learning_efficiency_diagnostics_and_cost_2.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 822,
+      "tableWidth": 378
+    },
+    {
+      "name": "learning_efficiency_diagnostics_and_cost_3.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 279,
+      "tableWidth": 1412
+    },
+    {
+      "name": "learning_efficiency_diagnostics_and_cost_3.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 253,
+      "tableWidth": 888
+    },
+    {
+      "name": "learning_efficiency_diagnostics_and_cost_3.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 6,
+      "tableHeight": 633,
+      "tableWidth": 378
+    },
+    {
+      "name": "progress_and_next_decision_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 7,
+      "tableHeight": 325,
+      "tableWidth": 1412
+    },
+    {
+      "name": "progress_and_next_decision_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 7,
+      "tableHeight": 421,
+      "tableWidth": 888
+    },
+    {
+      "name": "progress_and_next_decision_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 7,
+      "tableHeight": 1159,
+      "tableWidth": 378
+    },
+    {
+      "name": "seaquest_seed_601_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 141,
+      "tableWidth": 1412
+    },
+    {
+      "name": "seaquest_seed_601_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 127,
+      "tableWidth": 888
+    },
+    {
+      "name": "seaquest_seed_601_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 552,
+      "tableWidth": 378
+    },
+    {
+      "name": "spaceinvaders_seed_601_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 141,
+      "tableWidth": 1412
+    },
+    {
+      "name": "spaceinvaders_seed_601_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 127,
+      "tableWidth": 888
+    },
+    {
+      "name": "spaceinvaders_seed_601_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 3,
+      "tableHeight": 552,
+      "tableWidth": 378
+    },
+    {
+      "name": "what_changed_and_what_remains_different_1.html",
+      "width": 1440,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 10,
+      "tableHeight": 463,
+      "tableWidth": 1412
+    },
+    {
+      "name": "what_changed_and_what_remains_different_1.html",
+      "width": 900,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 10,
+      "tableHeight": 589,
+      "tableWidth": 888
+    },
+    {
+      "name": "what_changed_and_what_remains_different_1.html",
+      "width": 390,
+      "overflow": false,
+      "badCells": 0,
+      "rows": 10,
+      "tableHeight": 1729,
+      "tableWidth": 378
+    }
+  ]
+}

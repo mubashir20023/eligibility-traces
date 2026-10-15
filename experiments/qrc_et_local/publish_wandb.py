@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 from prepare_publication import GAMES, read_csv, validate_export
+from report_tables import presentation_digest, split_tables, table_height, table_html
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -34,6 +35,17 @@ def pkt(iso):
     return datetime.fromisoformat(iso).astimezone(timezone(timedelta(hours=5))).strftime("%d %b %Y %H:%M")
 
 
+def run_metric_rows(rows, include_game=True):
+    return [( [r["game"]] if include_game else []) +
+            [str(r["seed"]), "QRC" if r["variant"] == "qrc" else "Experimental ET",
+             f"{r['score']:.2f}", f"{r['curve_average']:.3f}", f"{r['minutes']:.1f}",
+             f"{r['td_squared']:.6f}", "N/A" if r["trace_loss"] is None else f"{r['trace_loss']:.6f}"]
+            for r in sorted(rows, key=lambda r: (GAMES.index(r["game"]), r["seed"], r["variant"] != "qrc"))]
+
+
+METRIC_HEADERS = ["Seed", "Method", "Score", "Curve avg.", "Time (min)", "TD squared", "Trace loss"]
+
+
 def content(evidence, github):
     runs, parts = evidence["runs"], []
     def md(text):
@@ -54,9 +66,20 @@ def content(evidence, github):
        "Seed **601**, learning rate **0.002**, matched initialization and exploration keys. "
        "Final-window scores average the logged rolling-100-episode return over **900k < step <= 1M**. "
        "These are training returns, not independent policy evaluations.\n\n" +
-       table(["Game", "QRC", "Experimental ET", "ET - QRC"], [
-           [game, f"{q['score']:.2f}", f"{e['score']:.2f}", f"{e['score']-q['score']:+.2f}"]
+       "**Combined available seeds, within each game:** only seed 601 is currently available "
+       "for this experimental agent (n=1). The combined mean therefore equals its individual result; "
+       "between-seed variation and confidence intervals cannot be estimated. Historical seeds from other "
+       "ET variants are not pooled into this comparison.\n\n" +
+       table(["Game", "Matched seeds (n)", "QRC mean score", "ET mean score", "ET - QRC"], [
+           [game, "1", f"{q['score']:.2f}", f"{e['score']:.2f}", f"{e['score']-q['score']:+.2f}"]
            for game in GAMES for q, e in [pair(runs, game)]]) +
+       "\n\n### All Five Games | Individual Seed Details\n\n" +
+       table(["Game"] + METRIC_HEADERS,
+             run_metric_rows([r for r in runs if r["budget"] == 1000000])) +
+       "\n\nTime is measured training wall time including initialization/compilation, not W&B import runtime. "
+       "TD squared and trace loss are final-window means of samples every 1k steps, not every transition. "
+       "N/A means QRC has no learned trace predictor; it does not mean zero loss. "
+       "Lower diagnostic loss alone does not establish better control.\n\n" +
        "\n\nThe two overview graphs use the same game colors and axes. Raw game rewards have different meanings; "
        "they are shown together for orientation, not averaged or ranked across games.")
     grid([r for r in runs if r["budget"] == 1000000], "All five games", 1000000, True)
@@ -69,9 +92,12 @@ def content(evidence, github):
                 "Freeway": "The endpoint gain is larger than the very small whole-budget curve-average gain.",
                 "Seaquest": "Experimental ET is higher, but absolute returns remain low for both methods.",
                 "SpaceInvaders": "The endpoint gain is accompanied by only a small whole-budget curve-average gain."}[game]
-        md(f"### {game}\n\nFinal-window return: **{q['score']:.2f} vs {e['score']:.2f}** "
+        md(f"### {game} | Seed 601\n\nFinal-window return: **{q['score']:.2f} vs {e['score']:.2f}** "
            f"(ET - QRC **{e['score']-q['score']:+.2f}**). Whole-budget curve averages: "
-           f"**{q['curve_average']:.3f} vs {e['curve_average']:.3f}**. {note}")
+           f"**{q['curve_average']:.3f} vs {e['curve_average']:.3f}**. {note}\n\n" +
+           table(METRIC_HEADERS, run_metric_rows([q, e], include_game=False)) +
+           "\n\nAvailable paired seeds: **601 (n=1)**. Combined-seed means equal this seed's values; "
+           "no between-seed spread is available.")
         grid([q, e], game, 1000000)
     q, e = pair(runs, "Breakout", 3000000)
     milestones = []
@@ -90,9 +116,9 @@ def content(evidence, github):
        "\n\nThe deficit grows from -1.16 at 1M to -3.38 at 3M. Longer training alone did not close it. "
        "This does not establish what will happen at 5M or with other seeds.")
     grid([q, e], "Breakout | 3M", 3000000)
-    md("### Breakout Performance and Runtime\n\n" +
-       table(["Method", "Final-window return", "Curve average", "Run minutes"], [
-           [r["method"], f"{r['score']:.2f}", f"{r['curve_average']:.3f}", f"{r['minutes']:.1f}"] for r in [q, e]]) +
+    md("### Breakout | 3M | Seed 601 Metrics\n\n" +
+       table(METRIC_HEADERS, run_metric_rows([q, e], include_game=False)) +
+       "\n\nAvailable paired seeds: **601 (n=1)**; combined-seed means are identical."
        "\n\nFinal-window sampled TD squared error is **0.052241 for QRC** versus **0.005895 for experimental ET**. "
        "ET trace regression loss is **0.173820**. Its lower sampled TD error does **not** imply better control; "
        "its training return is lower.")
@@ -155,12 +181,19 @@ def content(evidence, github):
     return parts
 
 
-def build_blocks(wr, evidence, github):
+def build_blocks(wr, evidence, github, tables_run_id):
     runs = {r["id"]: r for r in evidence["runs"]}
     blocks = []
-    for part in content(evidence, github):
+    for part in split_tables(content(evidence, github)):
         if part["kind"] == "markdown":
             blocks.append(wr.MarkdownBlock(part["text"]))
+            continue
+        if part["kind"] == "table":
+            rs = wr.Runset(entity=ENTITY, project=PROJECT, name="Report tables",
+                           filters=f"ID = '{tables_run_id}'")
+            blocks.append(wr.PanelGrid(runsets=[rs], hide_run_sets=True, panels=[
+                wr.MediaBrowser(title=part["title"], media_keys=[part["key"]], num_columns=1,
+                                layout=wr.Layout(x=0, y=0, w=24, h=table_height(part)))]))
             continue
         selected = [runs[rid] for rid in part["ids"]]
         rs = wr.Runset(entity=ENTITY, project=PROJECT, name=part["title"],
@@ -186,6 +219,32 @@ def build_blocks(wr, evidence, github):
                            layout=wr.Layout(x=index * 12, y=0, w=12, h=11)))
         blocks.append(wr.PanelGrid(runsets=[rs], hide_run_sets=True, panels=panels))
     return blocks
+
+
+def upload_tables(wandb, api, tables, run_id, digest):
+    try:
+        existing = api.run(f"{ENTITY}/{PROJECT}/{run_id}")
+    except wandb.errors.CommError as error:
+        if "Could not find run" not in str(error) and "not found" not in str(error).lower():
+            raise
+        existing = None
+    if existing is not None:
+        assert existing.config.get("presentation_only") is True
+        assert existing.config.get("table_digest") == digest
+        if existing.summary.get("Tables complete") is True:
+            print("Reusing report presentation tables", flush=True)
+            return
+        print("Resuming incomplete presentation-only upload", flush=True)
+    settings = wandb.Settings(quiet=True, console="off", disable_code=True, disable_git=True,
+                              x_disable_stats=True, x_disable_meta=True, x_disable_machine_info=True)
+    with wandb.init(entity=ENTITY, project=PROJECT, id=run_id, name="Report tables | Seed 601",
+                    job_type="report-presentation", group="Local ET report presentation",
+                    config={"presentation_only": True, "table_digest": digest, "source_dataset": DATASET},
+                    tags=["report-presentation"], settings=settings, reinit="create_new",
+                    resume="allow" if existing is not None else "never",
+                    notes="Presentation only, not training or an additional seed. Existing experiment histories are unchanged.") as run:
+        run.log({part["key"]: wandb.Html(table_html(part), inject=False) for part in tables})
+        run.summary.update({"Tables complete": True, "Table count": len(tables)})
 
 
 def upload(wandb, run):
@@ -228,6 +287,11 @@ def main():
     args = parser.parse_args()
     evidence = validate_export(HERE)
     sections = content(evidence, args.github)
+    table_parts = [p for p in split_tables(sections) if p["kind"] == "table"]
+    tables_dir = HERE / "tables"
+    tables_dir.mkdir(exist_ok=True)
+    for part in table_parts:
+        (tables_dir / (part["key"].split("/")[-1] + ".html")).write_text(table_html(part), encoding="ascii")
     (HERE / "REPORT.md").write_text("# " + TITLE + "\n\n" + "\n\n".join(
         p["text"] if p["kind"] == "markdown" else f"[Interactive paired graphs: {p['title']}]"
         for p in sections), encoding="ascii")
@@ -244,7 +308,9 @@ def main():
     from wandb_workspaces._graphql import execute_graphql
     from wandb_workspaces.reports.v2 import gql
     from wandb_workspaces.reports.v2.interface import _get_api
-    blocks = build_blocks(wr, evidence, args.github)
+    tables_digest = presentation_digest(table_parts)
+    tables_run_id = "localet261015_tables_" + tables_digest[:12]
+    blocks = build_blocks(wr, evidence, args.github, tables_run_id)
     for block in blocks:
         block._to_model()
     api = wandb.Api()
@@ -266,10 +332,14 @@ def main():
         else:
             upload(wandb, run)
             print("Imported", run["game"], run["method"], run["budget"], flush=True)
+    upload_tables(wandb, api, table_parts, tables_run_id, tables_digest)
     report = wr.Report.from_url(prior["url"]) if prior else wr.Report(
         entity=ENTITY, project=PROJECT, title=TITLE,
         description="Matched-seed local screen: five games at 1M steps and Breakout at 3M; QRC and experimental ET only.", width="fluid")
     assert not prior or set(prior_ids) == {r["id"] for r in evidence["runs"]}
+    if prior:
+        backup = ROOT / "review_outputs/et_lab/report_before_metric_tables.json"
+        backup.write_text(report._to_model().model_dump_json(by_alias=True, exclude_none=True), encoding="utf-8")
     report.title, report.width = TITLE, "fluid"
     report.blocks = blocks
     report.save()
@@ -279,10 +349,18 @@ def main():
     assert spec["width"] == "fluid"
     remote = wr.Report.from_url(canonical)
     grids = [block for block in remote.blocks if isinstance(block, wr.PanelGrid)]
-    assert len(grids) == 7 and all(g.hide_run_sets and len(g.panels) == 2 for g in grids)
+    chart_grids = [g for g in grids if any(isinstance(p, wr.LinePlot) for p in g.panels)]
+    table_grids = [g for g in grids if any(isinstance(p, wr.MediaBrowser) for p in g.panels)]
+    assert len(chart_grids) == 7 and all(g.hide_run_sets and len(g.panels) == 2 for g in chart_grids)
+    assert len(table_grids) == len(table_parts) and all(g.hide_run_sets for g in table_grids)
     selected = " ".join(str(rs.filters) for grid in grids for rs in grid.runsets)
     assert all(run["id"] in selected for run in evidence["runs"]) and "et_original" not in selected
     verification_api = wandb.Api()
+    presentation = verification_api.run(f"{ENTITY}/{PROJECT}/{tables_run_id}")
+    assert presentation.config["presentation_only"] is True
+    assert presentation.summary["Table count"] == len(table_parts)
+    for part in table_parts:
+        assert presentation.summary[part["key"]]["_type"] == "html-file"
     for run in evidence["runs"]:
         imported = verification_api.run(f"{ENTITY}/{PROJECT}/{run['id']}")
         assert imported.config["Method"] == run["method"] and imported.config["Seed"] == 601
@@ -292,7 +370,9 @@ def main():
     forge = canonical.replace("https://wandb.ai/", "https://forge.coreweave.com/wandb/")
     state = {"url": canonical, "forge_url": forge, "report_id": report.id, "github": args.github,
              "run_ids": [r["id"] for r in evidence["runs"]], "run_count": 12,
-             "panel_count": 14, "width": spec["width"], "verified": True}
+             "panel_count": 14 + len(table_parts), "graph_panel_count": 14,
+             "table_panel_count": len(table_parts), "tables_run_id": tables_run_id,
+             "table_digest": tables_digest, "width": spec["width"], "verified": True}
     state_path.write_text(json.dumps(state, indent=2), encoding="ascii")
     print(json.dumps(state, indent=2), flush=True)
 
