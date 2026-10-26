@@ -1,0 +1,28 @@
+#!/bin/bash
+#SBATCH --job-name=R28_fw_ctrl
+#SBATCH --array=0-74
+#SBATCH --cpus-per-task=4
+#SBATCH --time=16:00:00
+#SBATCH --mem=8G
+#SBATCH --output=logs/R28_fw_ctrl_%A_%a.out
+#SBATCH --error=logs/R28_fw_ctrl_%A_%a.err
+# R28: 5 arms x 15 fresh seeds (101-115). Tasks 0-14 arm0, 15-29 arm1, 30-44 arm2, 45-59 arm3, 60-74 arm4.
+
+module -q load mamba
+conda activate streamrl
+cd /fred/oz511/muahmed/code/stream-rep-rl
+mkdir -p logs
+export JAX_PLATFORMS=cpu
+
+SEEDS=(101 102 103 104 105 106 107 108 109 110 111 112 113 114 115)
+ARM=$((SLURM_ARRAY_TASK_ID / 15))
+SEED=${SEEDS[$((SLURM_ARRAY_TASK_ID % 15))]}
+COMMON="--env_type minatar --env_id MinAtar/Freeway-v1 --seed $SEED --total_timesteps 5000000 --resume"
+
+case $ARM in
+  0) python algorithms/qrc.py $COMMON --exp_name R28_qrc_lam08_lr5e4 --q_lr 5e-4 --lamda 0.8 ;;
+  1) python algorithms/qrc-et-algo3.py $COMMON --exp_name R28_et_eta03_lr2e3 --q_lr 2e-3 --lamda 0.8 --et_algo3 --et_eta 0.3 --et_paired_rng ;;
+  2) python algorithms/qrc-et-algo3.py $COMMON --exp_name R28_zero_eta03_lr2e3 --q_lr 2e-3 --lamda 0.8 --et_algo3 --et_eta 0.3 --et_paired_rng --et_zero_theta ;;
+  3) python algorithms/qrc.py $COMMON --exp_name R28_qrc_lam024_lr5e4 --q_lr 5e-4 --lamda 0.24 ;;
+  4) python algorithms/qrc.py $COMMON --exp_name R28_qrc_lam024_lr1e3 --q_lr 1e-3 --lamda 0.24 ;;
+esac

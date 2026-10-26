@@ -154,3 +154,89 @@ def test_zero_theta_ablation_ignores_theta_and_scales_trace():
     y1 = np.array(c.et_y_trace)
     c, _ = step(ALGO3, c, 1)
     assert np.abs(y1).sum() > 0
+
+
+def test_raw_target_option_uses_theta_independent_trace():
+    st = make(ALGO3, et_eta=0.3, et_algo3_target="raw")
+    st, _ = step(ALGO3, st, 0)
+    obs, action, nobs, r = trans(1)
+    cfg = st.agent_config; head = ALGO3.get_head_name(cfg)
+    qg = jax.grad(lambda p: st.train_state.apply_fn(p, obs)[action])(st.train_state.params)
+    hk = qg["params"][head]["kernel"]
+    raw = cfg.gamma * cfg.lamda * st.grad_q_trace["params"][head]["kernel"] + hk
+    z = st.et_state.apply_fn(st.et_state.params, hk[:, action])
+    expect = float(jnp.sum(jnp.mean((z - raw.T) ** 2, axis=-1)))
+    _, m = step(ALGO3, st, 1)
+    assert np.isclose(float(m["et_trace_loss"]), expect, rtol=1e-4)
+
+
+def test_no_lag_option_uses_current_theta():
+    base = make(ALGO3, et_eta=0.3, et_algo3_lag=False)
+    base, _ = step(ALGO3, base, 0)
+    a, _ = step(ALGO3, base, 1)
+    b, _ = step(ALGO3, perturb_theta(base), 1)
+    assert not close(a.train_state.params, b.train_state.params)
+
+
+def test_paired_rng_reproduces_plain_qrc_trajectory():
+    """With et_eta=1 and et_paired_rng=True the ET agent must follow plain qrc.py action-for-action."""
+    QRC = _load("qrc_plain", "qrc.py")
+    def run(mod, steps=300, seed=1, **kw):
+        args = mod.Args(env_type="minatar", env_id="MinAtar/Freeway-v1", seed=seed, total_timesteps=5_000_000, **kw)
+        cfg = mod.Config.from_args(args); env = mod.make_env(args, 0, "t")
+        obs, _ = env.reset(seed=seed); obs = np.array(obs); A = int(env.action_space.n)
+        rng = jax.random.PRNGKey(seed)
+        st, rng = mod.QRCAgent.init_state(cfg, A, obs.shape, rng)
+        sched = mod.get_linear_epsilon_schedule(args); acts = []
+        for t in range(steps):
+            a, ng, rng = mod.QRCAgent.step(st, obs, A, sched(t), rng); a = int(a); ng = bool(ng)
+            nobs, r, term, trunc, _ = env.step(a); nobs = np.array(nobs)
+            st, _ = mod.QRCAgent.update(st, (obs, a, nobs.copy(), r), term, trunc, ng)
+            if term or trunc:
+                nobs, _ = env.reset(); nobs = np.array(nobs)
+            acts.append(a); obs = nobs
+        return np.array(acts), st.train_state.params
+    aq, pq = run(QRC)
+    ap_, pp = run(ALGO3, et_eta=1.0, et_paired_rng=True)
+    assert np.array_equal(aq, ap_)
+    assert close(pq, pp, tol=1e-5)
+    an, _ = run(ALGO3, et_eta=1.0, et_paired_rng=False)
+    assert not np.array_equal(aq, an), "old init should NOT be paired with qrc.py"
+
+
+def test_stochasticity_knobs_default_off_and_wired():
+    for mod in (ALGO3, _load("qrc_plain2", "qrc.py")):
+        a0 = mod.Args(env_type="minatar", env_id="MinAtar/Freeway-v1")
+        assert a0.sticky_action_prob is None and a0.reward_noise_std == 0.0
+        e = mod.make_env(mod.Args(env_type="minatar", env_id="MinAtar/Freeway-v1", sticky_action_prob=0.5), 0, "t")
+        assert e.get_wrapper_attr("game").sticky_action_prob == 0.5
+        e = mod.make_env(mod.Args(env_type="minatar", env_id="MinAtar/Asterix-v1"), 0, "t")
+        assert e.get_wrapper_attr("game").sticky_action_prob == 0.1       # MinAtar default untouched
+
+
+def test_reward_noise_reaches_agent_but_not_logged_returns():
+    mod = ALGO3
+    e = mod.make_env(mod.Args(env_type="minatar", env_id="MinAtar/Freeway-v1", reward_noise_std=1.0, seed=3), 0, "t")
+    e.reset(seed=3)
+    rs = []
+    for _ in range(200):
+        _, r, term, trunc, _ = e.step(0)
+        rs.append(r)
+        if term or trunc:
+            e.reset()
+    assert np.std(rs) > 0.1                                  # agent sees noisy rewards
+    rq = list(e.get_wrapper_attr("return_queue"))
+    assert all(float(x) == round(float(x)) for x in rq)      # logged episode returns are true (integer) returns
+
+
+def test_gridworld_network_runs_and_theta_matches_state_space():
+    args = ALGO3.Args(env_type="gridworld", env_id="grid", total_timesteps=1000, q_lr=0.05, opt="sgd", et_eta=0.3,
+                      et_algo3=True, et_paired_rng=True, grid_hidden=0)
+    cfg = ALGO3.Config.from_args(args)
+    st, rng = ALGO3.QRCAgent.init_state(cfg, 4, (25,), jax.random.PRNGKey(0))
+    assert st.et_y_trace.shape == (25, 4)               # one-hot features, 4 actions
+    x = np.zeros(25, np.float32); x[3] = 1.0; x2 = np.zeros(25, np.float32); x2[4] = 1.0
+    st2, _ = ALGO3.QRCAgent.update(st, (x, 1, x2, 1.0), True, False, False)
+    q = st2.train_state.apply_fn(st2.train_state.params, x)
+    assert float(q[1]) > 0.0                            # reward 1 at termination raises q(s=3, a=1)
+    assert float(q[0]) == 0.0                           # untouched action unchanged

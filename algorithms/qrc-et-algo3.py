@@ -115,6 +115,15 @@ class Args:
     periodic_checkpointing: bool = False
     """whether to save periodic checkpoints during training"""
     resume: bool = False
+    grid_hidden: int = 0
+    """env_type='gridworld' only (scripts/gridworld_et.py). 0 = linear Q-function on one-hot states (tabular);
+    >0 = one ReLU hidden layer of this width."""
+    sticky_action_prob: Optional[float] = None
+    """MinAtar only. Override the environment's sticky-action probability (MinAtar's default is 0.1).
+    None = leave the default, so behaviour is unchanged."""
+    reward_noise_std: float = 0.0
+    """MinAtar only. Std of zero-mean Gaussian noise added to the reward the AGENT sees (applied after episode
+    statistics are recorded, so logged returns stay the true returns). 0.0 = no noise (default, unchanged)."""
     """whether to resume from the last checkpoint if available"""
     use_spr: bool = False
     """whether to use SPR (Self-Predictive Representations)"""
@@ -140,12 +149,41 @@ class Args:
     (2) the head weight update uses e_w_t directly, never this step's z_theta;
     Theta only reaches the weights one step later via y_t -> y_{t-1}.
     If False, recovers the original qrc-et.py behaviour exactly."""
+    et_algo3_target: str = "e_w"
+    """DIAGNOSTIC (R16). Which trace Theta regresses toward when et_algo3 is on.
+    'e_w' (default, Mathieu's Algorithm-3 target): the mixed recursion e_w_t = rho*gamma*lambda*y_{t-1} + grad,
+    which contains Theta's OWN earlier predictions (self-referential, no Theta-independent anchor).
+    'raw': the separately accumulated plain TD(lambda) head trace (all columns), independent of Theta
+    (the anchored target the original qrc-et.py used for the taken column)."""
+    et_algo3_lag: bool = True
+    """DIAGNOSTIC (R16). True (default) = Algorithm 3: the head weight update uses e_w_t, so this step's Theta
+    only reaches the weights one step later. False = the head update uses the mixed y_t (this step's Theta
+    included, all action columns). Isolates the effect of the one-step lag."""
+    et_paired_rng: bool = False
+    """PAIRED-SEED OPTION (R17). False (default, used by R12-R16): Theta's initialisation consumes one split of the
+    shared RNG, so after init the exploration random stream differs from plain qrc.py for the same --seed.
+    True: Theta is initialised from jax.random.fold_in(rng, 7919) WITHOUT advancing the shared RNG, so with
+    et_eta=1.0 this agent should follow exactly the same trajectory as qrc.py for the same seed
+    (same env stochasticity, same exploration stream, same initial Q/h weights)."""
     et_zero_theta: bool = False
     """ABLATION (root-cause test). If True, Theta's prediction is replaced by ZERO in the
     Eq. 3 mixture, so y_t = eta * e_w_t. This keeps the exact same shortened decay of the
     real-gradient part of the head trace (eta*gamma*lambda per step instead of
     gamma*lambda) but gives Theta no say at all. Compare with the same eta without the flag
     to separate 'effect of Theta' from 'effect of the Eq. 3 mixing shortening the trace'."""
+
+
+class RewardNoise(gym.Wrapper):
+    """Adds N(0, std^2) noise to the reward the agent sees. Seeded for reproducibility."""
+
+    def __init__(self, env, std, seed=0):
+        super().__init__(env)
+        self.std = std
+        self._rs = np.random.RandomState(seed + 12345)
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        return obs, float(reward) + float(self._rs.randn() * self.std), terminated, truncated, info
 
 
 class OctaxToGymAdapter(gym.Env):
@@ -236,11 +274,14 @@ def make_env(args, idx, run_name):
         return env
     elif args.env_type == "minatar":
         print(f"Creating standard Gym Minatar environment: {args.env_id}")
-        env = gym.make(args.env_id)
+        make_kwargs = {} if args.sticky_action_prob is None else {"sticky_action_prob": args.sticky_action_prob}
+        env = gym.make(args.env_id, **make_kwargs)
 
         # Episode statistics wrapper
         env = RecordEpisodeStatistics(env)
         env = StoreEpisodeReturnsAndLengths(env)
+        if args.reward_noise_std > 0:
+            env = RewardNoise(env, args.reward_noise_std, seed=args.seed)
 
         # Normalization must come after stats for correct results
         env = normalization.ScaleReward(env, gamma=args.gamma)
@@ -482,6 +523,19 @@ Agent = namedtuple("Agent", ["init_state", "step", "update"])
 # we just read x(s) out of it instead of recomputing it with a second
 # encoder. This class only implements Theta itself: a single linear layer
 # mapping x(s) -> one predicted trace-column per action.
+class GridQNetwork(nn.Module):
+    """Tiny Q-network for the gridworld sanity check. hidden=0 -> q(s,.) = W^T onehot(s) (tabular)."""
+
+    action_dim: int
+    hidden: int = 0
+
+    @nn.compact
+    def __call__(self, x):
+        if self.hidden > 0:
+            x = nn.relu(nn.Dense(self.hidden, name="Hid")(x))
+        return nn.Dense(self.action_dim, name="Qhead", kernel_init=nn.initializers.zeros, use_bias=False)(x)
+
+
 class ETProjection(nn.Module):
     """Theta: x(s) in R^{feat_dim}  -->  z_theta(s) in R^{action_dim x feat_dim}
 
@@ -516,6 +570,7 @@ _HEAD_NAME_BY_ENV_TYPE = {
     "octax": "Qhead",     # OctaxQNetwork: self.Qhead = nn.Dense(...)
     "atari": "Dense_1",   # AtariQNetwork: nn.Dense(..., name="Dense_1")
     "minatar": "Dense_1", # MinAtarQNetwork: second (unnamed -> auto "Dense_1") Dense
+    "gridworld": "Qhead", # GridQNetwork
 }
 
 
@@ -603,6 +658,9 @@ def init_agent_state_qrc_agent(
         elif agent_config.env_type == "octax":
             network = OctaxQNetwork(**net_kwargs)
             init_x = jnp.zeros(obs_shape)
+        elif agent_config.env_type == "gridworld":
+            network = GridQNetwork(action_dim=action_dim, hidden=agent_config.grid_hidden)
+            init_x = jnp.zeros(obs_shape)
         else:
             network = DenseQNetwork(**net_kwargs)
             init_x = jnp.zeros((obs_shape[0], np.prod(obs_shape[1:])))
@@ -646,7 +704,10 @@ def init_agent_state_qrc_agent(
     )
 
     et_module = ETProjection(feat_dim=feat_dim, action_dim=action_dim)
-    rng, _rng = jax.random.split(rng)
+    if agent_config.et_paired_rng:
+        _rng = jax.random.fold_in(rng, 7919)   # does not advance the shared RNG stream
+    else:
+        rng, _rng = jax.random.split(rng)
     et_params = et_module.init(_rng, jnp.zeros(feat_dim))
     et_state = TrainState.create(
         apply_fn=et_module.apply,
@@ -784,13 +845,14 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
     head_grad_t = q_grads["params"][head_name]["kernel"]  # (feat_dim, action_dim)
     e_w_t = rho_t * config.gamma * config.lamda * y_tm1 + head_grad_t
 
+    raw_head_trace_full = jax.lax.stop_gradient(grad_q_trace_t["params"][head_name]["kernel"])
+
     def et_loss_fn(et_params):
         z = et_state.apply_fn(et_params, x_s)  # (action_dim, feat_dim)
         if config.et_algo3:
             # whole past trace, all columns (sum over columns of per-column MSE)
-            trace_loss = jnp.sum(
-                jnp.mean((z - jax.lax.stop_gradient(e_w_t).T) ** 2, axis=-1)
-            )
+            tgt = raw_head_trace_full if config.et_algo3_target == "raw" else jax.lax.stop_gradient(e_w_t)
+            trace_loss = jnp.sum(jnp.mean((z - tgt.T) ** 2, axis=-1))
         else:
             trace_loss = jnp.mean((z[action] - et_trace_target) ** 2)
         return trace_loss, z
@@ -816,7 +878,8 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
 
     if config.et_algo3:
         # Algorithm 3: weight update uses e^w_t directly, never this step's y_t
-        z_head_kernel = e_w_t
+        # (et_algo3_lag=False is a diagnostic that uses y_t instead)
+        z_head_kernel = e_w_t if config.et_algo3_lag else y_t
     else:
         head_trace_full = grad_q_trace_t["params"][head_name]["kernel"]
         y_col = y_t[:, action]

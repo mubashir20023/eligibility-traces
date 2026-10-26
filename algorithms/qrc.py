@@ -114,9 +114,28 @@ class Args:
     periodic_checkpointing: bool = False
     """whether to save periodic checkpoints during training"""
     resume: bool = False
+    sticky_action_prob: Optional[float] = None
+    """MinAtar only. Override the environment's sticky-action probability (MinAtar's default is 0.1).
+    None = leave the default, so behaviour is unchanged."""
+    reward_noise_std: float = 0.0
+    """MinAtar only. Std of zero-mean Gaussian noise added to the reward the AGENT sees (applied after episode
+    statistics are recorded, so logged returns stay the true returns). 0.0 = no noise (default, unchanged)."""
     """whether to resume from the last checkpoint if available"""
     use_spr: bool = False
     """whether to use SPR (Self-Predictive Representations)"""
+
+
+class RewardNoise(gym.Wrapper):
+    """Adds N(0, std^2) noise to the reward the agent sees. Seeded for reproducibility."""
+
+    def __init__(self, env, std, seed=0):
+        super().__init__(env)
+        self.std = std
+        self._rs = np.random.RandomState(seed + 12345)
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        return obs, float(reward) + float(self._rs.randn() * self.std), terminated, truncated, info
 
 
 class OctaxToGymAdapter(gym.Env):
@@ -207,11 +226,14 @@ def make_env(args, idx, run_name):
         return env
     elif args.env_type == "minatar":
         print(f"Creating standard Gym Minatar environment: {args.env_id}")
-        env = gym.make(args.env_id)
+        make_kwargs = {} if args.sticky_action_prob is None else {"sticky_action_prob": args.sticky_action_prob}
+        env = gym.make(args.env_id, **make_kwargs)
 
         # Episode statistics wrapper
         env = RecordEpisodeStatistics(env)
         env = StoreEpisodeReturnsAndLengths(env)
+        if args.reward_noise_std > 0:
+            env = RewardNoise(env, args.reward_noise_std, seed=args.seed)
 
         # Normalization must come after stats for correct results
         env = normalization.ScaleReward(env, gamma=args.gamma)
@@ -869,6 +891,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
             tmp_path = checkpoint_path + ".tmp"
             with open(tmp_path, "wb") as f:
                 pickle.dump(checkpoint_data, f)
+            if os.path.exists(checkpoint_path):
+                os.remove(checkpoint_path)
             os.rename(tmp_path, checkpoint_path)
             # print(f"Resume checkpoint saved to {checkpoint_path}")
 
