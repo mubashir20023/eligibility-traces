@@ -125,6 +125,8 @@ class Args:
     """MinAtar only. Std of zero-mean Gaussian noise added to the reward the AGENT sees (applied after episode
     statistics are recorded, so logged returns stay the true returns). 0.0 = no noise (default, unchanged)."""
     """whether to resume from the last checkpoint if available"""
+    eval_values: bool = False
+    """Multi-chain prediction env only: log value RMSE over ALL states vs the exact values every log step."""
     use_spr: bool = False
     """whether to use SPR (Self-Predictive Representations)"""
     et_lr: float = 0.1
@@ -231,6 +233,22 @@ class OctaxToGymAdapter(gym.Env):
         )
         obs = jnp.transpose(obs, (1, 2, 0))
         return np.array(obs), float(reward), bool(done), False, {}
+
+
+def value_error_metrics(env, agent_state):
+    """Value error over all states of a MultiChainPred env, in true (unscaled) reward units."""
+    base = env.unwrapped
+    obs_stats = env.get_wrapper_attr("obs_stats")
+    obs = (base.all_observations() - obs_stats.mean) / np.sqrt(obs_stats.var + 1e-8)
+    ts = agent_state.train_state
+    q = np.asarray(ts.apply_fn(ts.params, jnp.asarray(obs, dtype=jnp.float32)))[:, 0]
+    reward_scale = float(np.sqrt(np.ravel(env.get_wrapper_attr("reward_stats").var)[0] + 1e-8))
+    err = q * reward_scale - base.true_values()
+    return {
+        "value_rmse": float(np.sqrt(np.mean(err ** 2))),
+        "value_rmse_chains": float(np.sqrt(np.mean(err[1:-1] ** 2))),
+        "value_start_err": float(err[0]),
+    }
 
 
 def make_env(args, idx, run_name):
@@ -1132,6 +1150,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
                 "epsilon": epsilon,
                 "episodes": episodes,
             }
+            if args.eval_values:
+                log_dict.update(value_error_metrics(env, agent_state))
 
             wandb.log(
                 {
