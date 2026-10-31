@@ -125,8 +125,14 @@ class Args:
     """MinAtar only. Std of zero-mean Gaussian noise added to the reward the AGENT sees (applied after episode
     statistics are recorded, so logged returns stay the true returns). 0.0 = no noise (default, unchanged)."""
     """whether to resume from the last checkpoint if available"""
+    obs_norm: bool = True
+    """MinAtar/multi-chain: normalise observations with a running mean/std (False = raw one-hot input)."""
     eval_values: bool = False
     """Multi-chain prediction env only: log value RMSE over ALL states vs the exact values every log step."""
+    snapshot_every: int = 0
+    """Multi-chain prediction env only (with eval_values): save per-state values and credit maps every N steps (0 = off)."""
+    snapshot_episodes: str = ""
+    """Multi-chain prediction env only (with eval_values): comma-separated episode numbers to snapshot, e.g. 1,3,10,100."""
     use_spr: bool = False
     """whether to use SPR (Self-Predictive Representations)"""
     et_lr: float = 0.1
@@ -157,6 +163,8 @@ class Args:
     which contains Theta's OWN earlier predictions (self-referential, no Theta-independent anchor).
     'raw': the separately accumulated plain TD(lambda) head trace (all columns), independent of Theta
     (the anchored target the original qrc-et.py used for the taken column)."""
+    et_split: bool = False
+    """R35. Theta predicts only the past part of the trace; the head update adds the exact current gradient."""
     et_algo3_lag: bool = True
     """DIAGNOSTIC (R16). True (default) = Algorithm 3: the head weight update uses e_w_t, so this step's Theta
     only reaches the weights one step later. False = the head update uses the mixed y_t (this step's Theta
@@ -238,8 +246,7 @@ class OctaxToGymAdapter(gym.Env):
 def value_error_metrics(env, agent_state):
     """Value error over all states of a MultiChainPred env, in true (unscaled) reward units."""
     base = env.unwrapped
-    obs_stats = env.get_wrapper_attr("obs_stats")
-    obs = (base.all_observations() - obs_stats.mean) / np.sqrt(obs_stats.var + 1e-8)
+    obs = _normalise_obs(env, base.all_observations())
     ts = agent_state.train_state
     q = np.asarray(ts.apply_fn(ts.params, jnp.asarray(obs, dtype=jnp.float32)))[:, 0]
     reward_scale = float(np.sqrt(np.ravel(env.get_wrapper_attr("reward_stats").var)[0] + 1e-8))
@@ -249,6 +256,109 @@ def value_error_metrics(env, agent_state):
         "value_rmse_chains": float(np.sqrt(np.mean(err[1:-1] ** 2))),
         "value_start_err": float(err[0]),
     }
+
+
+_SNAPSHOTS = {}
+
+
+def save_value_snapshot(env, agent_state, t, args, episode=0):
+    """Per-state values and one-update credit maps for MultiChainPred (Fig-3-style plots). Read-only."""
+    base = env.unwrapped
+    obs = jnp.asarray(_normalise_obs(env, base.all_observations()), dtype=jnp.float32)
+    ts = agent_state.train_state
+    scale = float(np.sqrt(np.ravel(env.get_wrapper_attr("reward_stats").var)[0] + 1e-8))
+    values = np.asarray(ts.apply_fn(ts.params, obs))[:, 0] * scale
+    inner = ts.params["params"]
+    head = sorted([k for k in inner if k.startswith("Dense")], key=lambda k: int(k.split("_")[-1]))[-1]
+
+    def q0(kernel, o):
+        p = dict(ts.params)
+        p["params"] = {**inner, head: {**inner[head], "kernel": kernel}}
+        return ts.apply_fn(p, o)[0]
+
+    X = np.asarray(jax.vmap(jax.grad(q0), in_axes=(None, 0))(inner[head]["kernel"], obs))[:, :, 0]   # (S, feat)
+    S, n = base.n_states, base.n
+    path = [0] + [1 + i for i in range(n)] + [S - 1]          # start -> chain 0 -> bottleneck
+    gl = args.gamma * args.lamda
+    e = np.zeros(X.shape[1])
+    for s in path:
+        e = gl * e + X[s]
+    credit_trace = X @ e
+    credit_agent, credit_zb = credit_trace, np.full(S, np.nan)
+    et = getattr(agent_state, "et_state", None)
+    if et is not None and getattr(args, "et_algo3", False):
+        z = lambda s: np.asarray(et.apply_fn(et.params, jnp.asarray(X[s])))[0] + (X[s] if getattr(args, "et_split", False) else 0)
+        theta_off = getattr(args, "et_zero_theta", False)
+        y = np.zeros(X.shape[1])
+        for s in path:                                        # Algorithm 3: e_w = gl*y + x;  y = (1-eta) z + eta e_w
+            e_w = gl * y + X[s]
+            zs = np.zeros_like(e_w) if theta_off else z(s)
+            y = (1 - args.et_eta) * zs + args.et_eta * e_w
+        u = e_w if getattr(args, "et_algo3_lag", True) else y
+        credit_agent, credit_zb = X @ u, X @ z(S - 1)
+    # ---- diagnostics: why can (or can't) an expected trace differ from the sampled trace here?
+    m_ = base.m
+    def path_trace(c, upto):                                     # ordinary trace along chain c, ending at state `upto`
+        pth = [0] + [1 + c * n + i for i in range(n)] + [S - 1]
+        e_ = np.zeros(X.shape[1])
+        for s_ in pth[:pth.index(upto) + 1]:
+            e_ = gl * e_ + X[s_]
+        return e_
+    traces = np.array([path_trace(c, S - 1) for c in range(m_)])   # trace at the shared state, one per chain
+    oracle = traces.mean(0)                                        # true expected trace E[e | shared state]
+    diag = {"trace_diversity": float(np.mean(np.sum((traces - oracle) ** 2, 1)) / (np.sum(oracle ** 2) + 1e-12))}
+    Xc = X[1:S - 1] / (np.linalg.norm(X[1:S - 1], axis=1, keepdims=True) + 1e-12)
+    cos = Xc @ Xc.T
+    diag["feature_cosine"] = float(cos[~np.eye(len(cos), dtype=bool)].mean())
+    sv = np.linalg.svd(X, compute_uv=False); pr = sv / sv.sum()
+    diag["feature_eff_rank"] = float(np.exp(-np.sum(pr * np.log(pr + 1e-12))))
+    g_b = jax.grad(lambda p: ts.apply_fn(p, obs[S - 1])[0])(ts.params)          # full gradient at the shared state
+    _, k_row = jax.jvp(lambda p: ts.apply_fn(p, obs)[:, 0], (ts.params,), (g_b,))
+    k_row = np.asarray(k_row)                                                     # NTK row K(s, shared)
+    diag["kernel_spread"] = float(np.mean(k_row[1:S - 1]) / (k_row[S - 1] + 1e-12))
+    diag["head_share"] = float((X[S - 1] @ X[S - 1]) / (k_row[S - 1] + 1e-12))
+    if et is not None and getattr(args, "et_algo3", False):
+        zb = z(S - 1)
+        diag["z_cosine"] = float(zb @ oracle / (np.linalg.norm(zb) * np.linalg.norm(oracle) + 1e-12))
+        diag["z_norm_ratio"] = float(np.linalg.norm(zb) / (np.linalg.norm(oracle) + 1e-12))
+    fname = "value_snapshots_episodes.npz" if episode else "value_snapshots.npz"
+    snap = _SNAPSHOTS.setdefault((args.log_dir, fname), {"step": [], "episode": [], "values": [], "credit_trace": [],
+                                                         "credit_agent": [], "credit_zb": [], "kernel_row": []})
+    for k, v in [("step", t), ("episode", episode), ("values", values), ("credit_trace", credit_trace),
+                 ("credit_agent", credit_agent), ("credit_zb", credit_zb), ("kernel_row", k_row)]:
+        snap[k].append(v)
+    snap.setdefault("reward_scale", []).append(scale)                          # reward normaliser at this moment
+    snap.setdefault("raw_mean_q", []).append(float(np.mean(values)) / scale)   # network output before rescaling
+    for k in ["trace_diversity", "feature_cosine", "feature_eff_rank", "kernel_spread", "head_share", "z_cosine", "z_norm_ratio"]:
+        snap.setdefault("diag_" + k, []).append(diag.get(k, np.nan))
+    np.savez_compressed(os.path.join(args.log_dir, fname), true=base.true_values(), chains=base.m, chain_len=n,
+                        **{k: np.array(v) for k, v in snap.items()})
+
+
+import flax.linen as nn  # needed for the class below (qrc.py does not import it)
+
+
+class OneHotLinearQNetwork(nn.Module):
+    """No convolution, no hidden layer, no bias: Q(s) = W x(s) on the flattened observation (tabular for one-hot x)."""
+    action_dim: int
+
+    @nn.compact
+    def __call__(self, x):
+        no_batch = x.ndim == 3
+        if no_batch:
+            x = x[None]
+        x = x.reshape((x.shape[0], -1))
+        x = nn.Dense(self.action_dim, use_bias=False, kernel_init=nn.initializers.zeros, name="Dense_0")(x)
+        return x[0] if no_batch else x
+
+
+def _normalise_obs(env, x):
+    """Apply the agent's observation normalisation if it is on (read-only)."""
+    try:
+        st = env.get_wrapper_attr("obs_stats")
+    except AttributeError:
+        return x
+    return (x - st.mean) / np.sqrt(st.var + 1e-8)
 
 
 def make_env(args, idx, run_name):
@@ -303,7 +413,8 @@ def make_env(args, idx, run_name):
 
         # Normalization must come after stats for correct results
         env = normalization.ScaleReward(env, gamma=args.gamma)
-        env = normalization.NormalizeObservation(env)
+        if args.obs_norm:
+            env = normalization.NormalizeObservation(env)
 
         return env
 
@@ -670,6 +781,9 @@ def init_agent_state_qrc_agent(
         if agent_config.env_type == "atari":
             network = AtariQNetwork(**net_kwargs)
             init_x = jnp.zeros(obs_shape)
+        elif agent_config.env_type == "minatar" and agent_config.net_arch == "linear":
+            network = OneHotLinearQNetwork(action_dim=action_dim)
+            init_x = jnp.zeros(obs_shape)
         elif agent_config.env_type == "minatar":
             network = MinAtarQNetwork(**net_kwargs)
             init_x = jnp.zeros(obs_shape)
@@ -870,6 +984,8 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
         if config.et_algo3:
             # whole past trace, all columns (sum over columns of per-column MSE)
             tgt = raw_head_trace_full if config.et_algo3_target == "raw" else jax.lax.stop_gradient(e_w_t)
+            if config.et_split:  # past part only: remove this step's gradient from the target
+                tgt = tgt - jax.lax.stop_gradient(head_grad_t)
             trace_loss = jnp.sum(jnp.mean((z - tgt.T) ** 2, axis=-1))
         else:
             trace_loss = jnp.mean((z[action] - et_trace_target) ** 2)
@@ -891,6 +1007,8 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
     z_full = jnp.transpose(jax.lax.stop_gradient(z_for_update))  # (feat_dim, action_dim)
     if config.et_zero_theta:
         z_full = jnp.zeros_like(z_full)
+    if config.et_split:  # z(S_t) = exact current gradient + predicted past part
+        z_full = z_full + head_grad_t
     eta = config.et_eta
     y_t = (1 - eta) * z_full + eta * e_w_t  # stored as y_{t-1} for next step
 
@@ -1111,6 +1229,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
 
         if done:
             episodes += 1
+            if args.eval_values and args.snapshot_episodes and str(episodes) in args.snapshot_episodes.split(","):
+                save_value_snapshot(env, agent_state, t, args, episode=episodes)
 
             episode_return = 0.0
             episode_length = 0
@@ -1152,6 +1272,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
             }
             if args.eval_values:
                 log_dict.update(value_error_metrics(env, agent_state))
+            if args.eval_values and args.snapshot_every and t % args.snapshot_every == 0:
+                save_value_snapshot(env, agent_state, t, args)
 
             wandb.log(
                 {

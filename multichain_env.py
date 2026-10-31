@@ -159,3 +159,25 @@ for _m in (1, 8, 32, 128):
         if _id not in gym.envs.registry:
             gym.register(id=_id, entry_point=MultiChainPredEnv,
                          kwargs=dict(m=_m, n=4, sigma=_s), max_episode_steps=100)
+
+
+class MultiChainSparseEnv(MultiChainPredEnv):
+    """Sparse version (as the open world in Fig. 1/2 of the ET paper): terminal reward +1 w.p. p, otherwise 0.
+    Random numbers are drawn in the same order as make_paper_figures.simulate (chain, then reward), so a deep run and a
+    tabular simulation with the same seed see exactly the same episodes and rewards."""
+
+    def __init__(self, m=8, n=4, p=0.2, gamma=0.99):
+        super().__init__(m=m, n=n, sigma=0.0, mean=p, gamma=gamma)
+        self.p = p
+
+    def step(self, action):
+        if self.state == self.n_states - 1:                    # shared state -> terminal, sparse reward
+            return self._encode(self.state), (1.0 if self._rng.random() < self.p else 0.0), True, False, {}
+        return super().step(action)
+
+
+for _m in (8, 32):
+    for _p in (0.2, 0.5, 0.9):
+        _id = f"MultiChainSparse-m{_m}-n4-p{_p}-v0"
+        if _id not in gym.envs.registry:
+            gym.register(id=_id, entry_point=MultiChainSparseEnv, kwargs=dict(m=_m, n=4, p=_p), max_episode_steps=100)
