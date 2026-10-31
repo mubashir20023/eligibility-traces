@@ -79,10 +79,10 @@ def run_info(csv_path):
             label += f" Theta-lr={cfg['et_lr']}"
         if cfg.get("et_algo3_lag") is False:
             label += " split" if cfg.get("et_split") else " no-lag"
-    if cfg.get("net_arch") == "linear":
-        label += " one-hot"
     else:
         label = f"QRC lambda={lam}"
+    if cfg.get("net_arch") == "linear":
+        label += " one-hot"
     info = dict(experiment=experiment, exp_name=exp, seed=int(seed) if seed.isdigit() else seed, env_id=env_id,
                 agent="ET" if is_et else "QRC", arm=label, q_lr=cfg.get("q_lr"), lamda=lam, et_eta=eta,
                 run_dir=os.path.abspath(run_dir), slurm_job=SLURM_JOBS.get(experiment, ""),
@@ -149,7 +149,8 @@ def publish(paths, args):
         keep = np.ones(len(step), bool)
         if len(step) > 2000:                                  # thin long Freeway histories for plotting
             keep = (step.astype(int) % args.stride == 0) | (np.arange(len(step)) == len(step) - 1)
-        run_id = hashlib.md5(key.encode()).hexdigest()[:12]
+        salt = "" if os.path.basename(os.path.normpath(args.out)) == "wandb_upload" else os.path.basename(os.path.normpath(args.out))
+        run_id = hashlib.md5((key + salt).encode()).hexdigest()[:12]   # new folder name -> new run ids
         run = wandb.init(mode="offline", dir=args.out, entity=args.entity, project=args.project, id=run_id,
                          name=f"{info['experiment']} | {info['env_id'].split(':')[-1]} | {info['arm']} | lr {info['q_lr']} | seed {info['seed']}",
                          group=info["experiment"], job_type=info["arm"],
