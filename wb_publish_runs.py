@@ -34,11 +34,12 @@ REPO = os.path.abspath(".")
 GITHUB = "https://github.com/mubashir20023/eligibility-traces/tree/cluster-r29"
 SLURM_JOBS = {"R27": "18568147", "R28": "19078432", "R29": "19146242",
               "R30": "19288335 (duplicate 19288347 cancelled before any task started)", "R31": "19290244",
-              "R33": "19489436", "R34c": "19497492", "R35a": "19569543", "R35": "19569571"}
+              "R33": "19489436", "R34c": "19497492", "R35a": "19569543", "R35": "19569571", "R36": "19651125", "R37": "19802608"}
 SCRIPTS = {"R27": "slurm/R27_freeway_2e3.sh", "R28": "slurm/R28_freeway_controls.sh",
            "R29": "slurm/R29_freeway_lr_sweep.sh", "R30": "slurm/R30_pred_screen.sh", "R31": "slurm/R31_theta_fix.sh",
            "R33": "slurm/R33_onehot_sparse.sh", "R34a": "slurm/R34a_onehot_confirm.sh", "R34b": "slurm/R34b_conv_fixed.sh",
-           "R34c": "slurm/R34c_minatar_fixed.sh", "R35a": "slurm/R35a_onehot_split.sh", "R35": "slurm/R35_minatar_split.sh"}
+           "R34c": "slurm/R34c_minatar_fixed.sh", "R35a": "slurm/R35a_onehot_split.sh", "R35": "slurm/R35_minatar_split.sh",
+           "R36": "slurm/R36_minatar_tune.sh", "R37": "slurm/R37_minatar_final.sh"}
 
 
 # ----------------------------------------------------------------------------------------------- reading

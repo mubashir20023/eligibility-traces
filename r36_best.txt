@@ -1,0 +1,10 @@
+Asterix qrc 0.5 - 1e-3
+Asterix et 0.24 100 5e-4
+Breakout qrc 0.5 - 5e-4
+Breakout et 0.8 30 2e-3
+Freeway qrc 0.24 - 2e-3
+Freeway et 0.24 30 2e-3
+Seaquest qrc 0 - 5e-4
+Seaquest et 0.24 100 5e-4
+SpaceInvaders qrc 0.5 - 5e-4
+SpaceInvaders et 0.24 30 5e-4

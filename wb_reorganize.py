@@ -60,6 +60,8 @@ def fig_pair(path, panels):
                     marker="o" if o.get("markers") else None, ms=4, label=lab)
         if o.get("logx"):
             ax.set_xscale("log")
+        if o.get("xticks"):
+            ax.set_xticks(o["xticks"]); ax.set_xticklabels([str(t) for t in o["xticks"]]); ax.minorticks_off()
         if o.get("logy"):
             ax.set_yscale("log")
         if o.get("ylim"):
