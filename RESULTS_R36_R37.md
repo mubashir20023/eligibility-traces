@@ -54,7 +54,11 @@ QRC-ET by Θ/Q ratio (best / median score over learning rates and λ):
 1. With equal tuning, QRC-ET (split form) is level with QRC on all five MinAtar games.
 2. The Θ/Q learning-rate ratio makes little difference; a faster Θ (ratio 300) does not help, so Θ adapting too
    slowly to changing features is not the bottleneck.
-3. QRC-ET is more robust: 0 of 360 tuning runs diverged, against 23 of 360 for QRC.
+3. Divergence: all 23 diverged runs (of 720) are QRC with λ = 0.9 or 0.95 (|Q| reached 1e4 to 1e18, one NaN, between
+   270k and 480k steps; returns mostly collapsed). QRC-ET was only run with λ ≤ 0.8, and at λ = 0.24 and 0.8 neither
+   method diverged, so this does NOT show that QRC-ET is more robust.
+   Divergence definition: the logged Q(S_t, A_t) (scaled reward units, healthy runs ~1-3; one sample every 1000 steps)
+   is ever non-finite or |Q| > 1e4. This is a fixed cut-off, not a derived bound.
 4. QRC-ET's best λ was 0.24 (the shortest offered) on 4 of 5 games, while QRC often preferred λ=0.5, which QRC-ET
    did not get; if anything the grid favours QRC.
 5. Together with R33-R35: expected traces clearly help with one-hot features (13-32% lower value error, every seed)
