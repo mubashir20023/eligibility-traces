@@ -108,6 +108,12 @@ class Args:
     opt: str = "sgd"
     """optimizer to use"""
     net_arch: str = "minatar"
+    mlp_hidden: int = 128
+    """MinAtar --net_arch mlp: width of the single hidden layer."""
+    init_from: str = ""
+    """Path to a trained agent's .cleanrl_model: copy all layers except the Q head (Q and h networks)."""
+    freeze_body: bool = False
+    """Keep all layers except the head fixed (Q and h networks)."""
     """network architecture"""
     mlp_layers: Optional[List[int]] = None
     """MLP hidden layers"""
@@ -309,6 +315,69 @@ def _normalise_obs(env, x):
     except AttributeError:
         return x
     return (x - st.mean) / np.sqrt(st.var + 1e-8)
+
+
+from networks.layer_norm import layer_norm as _layer_norm  # used by MinAtarMLPQNetwork
+from networks.ActorCritic import act_funcs as _act_funcs
+
+
+class MinAtarMLPQNetwork(nn.Module):
+    """MinAtar Q network without convolution: flatten -> Dense(hidden) -> activation -> Dense(action_dim)."""
+    action_dim: int
+    hidden: int
+    layer_norm: bool
+    activation: str
+    kernel_init: Callable
+
+    @nn.compact
+    def __call__(self, x):
+        no_batch = x.ndim == 3
+        if no_batch:
+            x = x[None]
+        x = x.reshape((x.shape[0], -1))
+        x = nn.Dense(self.hidden, kernel_init=self.kernel_init)(x)
+        if self.layer_norm:
+            x = _layer_norm(x)
+        x = _act_funcs[self.activation](x)
+        x = nn.Dense(self.action_dim, kernel_init=self.kernel_init, bias_init=nn.initializers.zeros)(x)
+        return x[0] if no_batch else x
+
+
+def _head_name(params):
+    keys = [k for k in params["params"] if k.startswith("Dense")]
+    return max(keys, key=lambda k: int(k.split("_")[-1]))
+
+
+def mask_body(update):
+    """Zero the update of every layer except the head (used by --freeze_body)."""
+    head = _head_name(update)
+    return jax.tree_util.tree_map_with_path(
+        lambda path, x: x if any(getattr(p, "key", None) == head for p in path) else jnp.zeros_like(x), update)
+
+
+def load_body(agent_state, path):
+    """--init_from: copy all layers except the head from a saved [q params, h params] model file."""
+    with open(path, "rb") as f:
+        data = f.read()
+    tq, th = agent_state.train_state, agent_state.h_state
+    src_q, src_h = flax.serialization.from_bytes([tq.params, th.params], data)
+
+    def merge(new, src):
+        head = _head_name(new)
+        out, s = flax.core.unfreeze(new), flax.core.unfreeze(src)
+        copied = []
+        for k in out["params"]:
+            if k != head:
+                out["params"][k] = s["params"][k]
+                copied.append(k)
+        print(f"  init_from: copied {copied}, kept fresh head {head}")
+        return flax.core.freeze(out) if isinstance(new, flax.core.FrozenDict) else out
+
+    q, h = merge(tq.params, src_q), merge(th.params, src_h)
+    tq = tq.replace(params=q, opt_state=tq.tx.init(q))
+    th = th.replace(params=h, opt_state=th.tx.init(h))
+    print(f"Loaded representation from {path}")
+    return agent_state._replace(train_state=tq, h_state=th)
 
 
 def make_env(args, idx, run_name):
@@ -646,6 +715,11 @@ def init_agent_state_qrc_agent(
         if agent_config.env_type == "atari":
             network = AtariQNetwork(**net_kwargs)
             init_x = jnp.zeros(obs_shape)
+        elif agent_config.env_type == "minatar" and agent_config.net_arch == "mlp":
+            network = MinAtarMLPQNetwork(action_dim=action_dim, hidden=agent_config.mlp_hidden,
+                                         layer_norm=agent_config.layer_norm, activation=agent_config.activation,
+                                         kernel_init=net_kwargs["kernel_init"])
+            init_x = jnp.zeros(obs_shape)
         elif agent_config.env_type == "minatar" and agent_config.net_arch == "linear":
             network = OneHotLinearQNetwork(action_dim=action_dim)
             init_x = jnp.zeros(obs_shape)
@@ -757,6 +831,8 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
             tree.scale(-h_t, q_grads),  # -h * ∇q
             q_update,
         )
+    if config.freeze_body:
+        q_update = mask_body(q_update)
     q_train_state = train_state.apply_gradients(
         grads=tree.neg(q_update)
     )  # Flip sign because Flax multiplies by -1
@@ -770,6 +846,8 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
         lambda x, y, z: -(x + y + z), delta_z_h, h_h_grad, beta_params
     )
 
+    if config.freeze_body:
+        h_update = mask_body(h_update)
     h_train_state = agent_state.h_state.apply_gradients(grads=h_update)
 
     if terminated or truncated or is_nongreedy:
@@ -837,6 +915,8 @@ def experiment(args: Args, agent: Agent, run_name: str):
     # Initialize the agent
     action_dim = int(env.action_space.n)
     agent_state, rng = agent.init_state(agent_config, action_dim, obs.shape, rng)
+    if args.init_from:
+        agent_state = load_body(agent_state, args.init_from)
     epsilon_schedule = get_linear_epsilon_schedule(args)
 
     # Tracking for logging

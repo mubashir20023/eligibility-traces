@@ -39,7 +39,11 @@ SCRIPTS = {"R27": "slurm/R27_freeway_2e3.sh", "R28": "slurm/R28_freeway_controls
            "R29": "slurm/R29_freeway_lr_sweep.sh", "R30": "slurm/R30_pred_screen.sh", "R31": "slurm/R31_theta_fix.sh",
            "R33": "slurm/R33_onehot_sparse.sh", "R34a": "slurm/R34a_onehot_confirm.sh", "R34b": "slurm/R34b_conv_fixed.sh",
            "R34c": "slurm/R34c_minatar_fixed.sh", "R35a": "slurm/R35a_onehot_split.sh", "R35": "slurm/R35_minatar_split.sh",
-           "R36": "slurm/R36_minatar_tune.sh", "R37": "slurm/R37_minatar_final.sh"}
+           "R36": "slurm/R36_minatar_tune.sh", "R37": "slurm/R37_minatar_final.sh",
+           "R38mlp": "slurm/R38_nonconv_tune.sh", "R38mlpF": "slurm/R38_nonconv_final.sh",
+           "R38lin": "slurm/R38_nonconv_tune.sh (first attempt, obs normalisation: diverged)",
+           "R38lin2": "slurm/R38_nonconv_tune.sh", "R38lin2F": "slurm/R38_nonconv_final.sh",
+           "R39": "slurm/R39_transfer.sh", "R39b": "slurm/R39b_frozen_matched.sh"}
 
 
 # ----------------------------------------------------------------------------------------------- reading
@@ -83,7 +87,11 @@ def run_info(csv_path):
     else:
         label = f"QRC lambda={lam}"
     if cfg.get("net_arch") == "linear":
-        label += " one-hot"
+        label += " one-hot" if "multichain" in str(cfg.get("env_id", "")) else " linear"
+    elif cfg.get("net_arch") == "mlp":
+        label += " MLP"
+    if cfg.get("init_from"):
+        label += " pretrained " + ("frozen" if cfg.get("freeze_body") else "unfrozen")
     info = dict(experiment=experiment, exp_name=exp, seed=int(seed) if seed.isdigit() else seed, env_id=env_id,
                 agent="ET" if is_et else "QRC", arm=label, q_lr=cfg.get("q_lr"), lamda=lam, et_eta=eta,
                 run_dir=os.path.abspath(run_dir), slurm_job=SLURM_JOBS.get(experiment, ""),

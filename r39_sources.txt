@@ -1,0 +1,10 @@
+Asterix qrc logs/MinAtar/Asterix-v1__R37_qrc_best_lr1e-3__409/R37_qrc_best_lr1e-3.cleanrl_model
+Asterix et logs/MinAtar/Asterix-v1__R37_et_best_lr5e-4__408/R37_et_best_lr5e-4.cleanrl_model
+Breakout qrc logs/MinAtar/Breakout-v1__R37_qrc_best_lr5e-4__409/R37_qrc_best_lr5e-4.cleanrl_model
+Breakout et logs/MinAtar/Breakout-v1__R37_et_best_lr2e-3__403/R37_et_best_lr2e-3.cleanrl_model
+Freeway qrc logs/MinAtar/Freeway-v1__R37_qrc_best_lr2e-3__407/R37_qrc_best_lr2e-3.cleanrl_model
+Freeway et logs/MinAtar/Freeway-v1__R37_et_best_lr2e-3__404/R37_et_best_lr2e-3.cleanrl_model
+Seaquest qrc logs/MinAtar/Seaquest-v1__R37_qrc_best_lr5e-4__405/R37_qrc_best_lr5e-4.cleanrl_model
+Seaquest et logs/MinAtar/Seaquest-v1__R37_et_best_lr5e-4__409/R37_et_best_lr5e-4.cleanrl_model
+SpaceInvaders qrc logs/MinAtar/SpaceInvaders-v1__R37_qrc_best_lr5e-4__409/R37_qrc_best_lr5e-4.cleanrl_model
+SpaceInvaders et logs/MinAtar/SpaceInvaders-v1__R37_et_best_lr5e-4__405/R37_et_best_lr5e-4.cleanrl_model

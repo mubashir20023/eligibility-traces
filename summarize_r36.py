@@ -3,16 +3,19 @@
 Score = mean rolling-100 return over the last 10% of 5M steps, averaged over the 3 tuning seeds (301-303).
 For each game prints the top configurations of each method, the effect of the Theta/Q rate ratio for QRC-ET,
 and divergence counts; writes r36_best.txt (best QRC and best QRC-ET configuration per game) for R37.
-Usage (from stream-rep-rl):  python summarize_r36.py
+Usage (from stream-rep-rl):  python summarize_r36.py          (R36, conv)
+                             python summarize_r36.py R38lin   (R38, linear)  |  python summarize_r36.py R38mlp
 """
-import csv, glob, re
+import csv, glob, re, sys
 from collections import defaultdict
 import numpy as np
 
 TOTAL = 5_000_000
+PREFIX = sys.argv[1] if len(sys.argv) > 1 else "R36"
+OUT = f"{PREFIX.lower()}_best.txt"
 score, div = defaultdict(dict), defaultdict(int)
-for p in glob.glob("logs/**/*-v1__R36_*__*/training_data.csv", recursive=True):
-    m = re.search(r"(\w+)-v1__R36_(.+)__(\d+)/", p)
+for p in glob.glob(f"logs/**/*-v1__{PREFIX}_*__*/training_data.csv", recursive=True):
+    m = re.search(rf"(\w+)-v1__{PREFIX}_(.+)__(\d+)/", p)
     rows = list(csv.DictReader(open(p))) if m else []
     if not rows or float(rows[-1]["global_step"]) < 0.99 * TOTAL:
         continue
@@ -54,6 +57,6 @@ for game in sorted({k[0] for k in score}):
         for method in ("qrc", "et"):
             kind, lam, r, lr = parse(best[method][1])
             best_lines.append(f"{game} {method} {lam} {r or '-'} {lr}")
-with open("r36_best.txt", "w") as f:
+with open(OUT, "w") as f:
     f.write("\n".join(best_lines) + "\n")
-print(f"\nWrote r36_best.txt ({len(best_lines)} lines: game method lambda ratio lr) for R37_minatar_final.sh")
+print(f"\nWrote {OUT} ({len(best_lines)} lines: game method lambda ratio lr) for the final-seeds job")
