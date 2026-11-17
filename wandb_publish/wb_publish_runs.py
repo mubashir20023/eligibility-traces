@@ -43,7 +43,10 @@ SCRIPTS = {"R27": "slurm/R27_freeway_2e3.sh", "R28": "slurm/R28_freeway_controls
            "R38mlp": "slurm/R38_nonconv_tune.sh", "R38mlpF": "slurm/R38_nonconv_final.sh",
            "R38lin": "slurm/R38_nonconv_tune.sh (first attempt, obs normalisation: diverged)",
            "R38lin2": "slurm/R38_nonconv_tune.sh", "R38lin2F": "slurm/R38_nonconv_final.sh",
-           "R39": "slurm/R39_transfer.sh", "R39b": "slurm/R39b_frozen_matched.sh"}
+           "R39": "slurm/R39_transfer.sh", "R39b": "slurm/R39b_frozen_matched.sh",
+           "R40": "slurm/R40_multihot.sh", "R40b": "slurm/R40b_multihot_tuning.sh", "R40c": "slurm/R40c_oracle_theta.sh",
+           "R41": "slurm/R41_qlambda_tune.sh", "R41F": "slurm/R41_qlambda_final.sh",
+           "R42": "slurm/R42_multichain_lambda.sh", "R43": "slurm/R43_minatar_lambda.sh"}
 
 
 # ----------------------------------------------------------------------------------------------- reading
@@ -92,6 +95,16 @@ def run_info(csv_path):
         label += " MLP"
     if cfg.get("init_from"):
         label += " pretrained " + ("frozen" if cfg.get("freeze_body") else "unfrozen")
+    if cfg.get("q_lambda"):                                   # R41: online Q(lambda), no gradient correction
+        label = label.replace("QRC lambda", "Q(lambda) lambda") if not is_et else label + " Q(lambda)"
+    if cfg.get("et_count_step"):                              # R42: theta step 1/visits
+        label += " theta-step-1/visits"
+    mcode = re.search(r"MultiChainCode(Id)?-m(\d+)-n(\d+)-p([\d.]+)-D(\d+)-k(\d+)", str(env_id))
+    if mcode:                                                 # R40: fixed multi-hot codes (D130 k1 is one-hot)
+        if int(mcode.group(5)) != 130:
+            label = label.replace(" one-hot", f" code D{mcode.group(5)} k{mcode.group(6)}")
+        if mcode.group(1):
+            label += " theta-on-state-id"
     info = dict(experiment=experiment, exp_name=exp, seed=int(seed) if seed.isdigit() else seed, env_id=env_id,
                 agent="ET" if is_et else "QRC", arm=label, q_lr=cfg.get("q_lr"), lamda=lam, et_eta=eta,
                 run_dir=os.path.abspath(run_dir), slurm_job=SLURM_JOBS.get(experiment, ""),
@@ -102,6 +115,9 @@ def run_info(csv_path):
     m = re.search(r"MultiChainSparse-m(\d+)-n(\d+)-p([\d.]+)", env_id)
     if m:
         info.update(chains=int(m.group(1)), chain_len=int(m.group(2)), reward_prob=float(m.group(3)))
+    if mcode:
+        info.update(chains=int(mcode.group(2)), chain_len=int(mcode.group(3)), reward_prob=float(mcode.group(4)),
+                    code_dim=int(mcode.group(5)), code_ones=int(mcode.group(6)), theta_on_state_id=bool(mcode.group(1)))
     return info, cfg
 
 
@@ -129,12 +145,18 @@ def run_summary(cols, total_steps):
 
 
 def discover(prefixes):
+    """One listing of logs/ and logs/MinAtar (a recursive glob walks every run folder, which is very slow on /fred)."""
     found = []
-    for p in sorted(glob.glob("logs/**/training_data.csv", recursive=True)):
-        parts = os.path.basename(os.path.dirname(p)).split("__")
-        if len(parts) >= 3 and any(parts[-2].startswith(pre + "_") for pre in prefixes):
-            found.append(p)
-    return found
+    for base in ("logs", os.path.join("logs", "MinAtar")):
+        if not os.path.isdir(base):
+            continue
+        for e in os.scandir(base):
+            parts = e.name.split("__")
+            if len(parts) >= 3 and any(parts[-2].startswith(pre + "_") for pre in prefixes):
+                p = os.path.join(base, e.name, "training_data.csv")
+                if os.path.exists(p):
+                    found.append(p)
+    return sorted(found)
 
 
 # ----------------------------------------------------------------------------------------------- upload

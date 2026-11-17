@@ -113,6 +113,12 @@ class Args:
     """MinAtar --net_arch mlp: width of the single hidden layer."""
     init_from: str = ""
     """Path to a trained agent's .cleanrl_model: copy all layers except the Q head (Q and h networks)."""
+    q_channels: int = 0
+    """Linear network: Q and h use only the first N observation channels (0 = all)."""
+    et_theta_input: str = "features"
+    """QRC-ET: theta input -- "features" (Q-head features) or "extra_channels" (channels after q_channels)."""
+    q_lambda: bool = False
+    """Online Watkins Q(lambda): drop the gradient-correction terms (Q update = delta * trace)."""
     freeze_body: bool = False
     """Keep all layers except the head fixed (Q and h networks)."""
     """network architecture"""
@@ -171,6 +177,9 @@ class Args:
     (the anchored target the original qrc-et.py used for the taken column)."""
     et_split: bool = False
     """R35. Theta predicts only the past part of the trace; the head update adds the exact current gradient."""
+    et_count_step: float = 0.0
+    """R42. If > 0: theta's step for every input feature is 1 / (visits of that feature) ** et_count_step, as in the
+    tabular experiments of the expected-traces paper (1.0 = running mean of the traces). 0 = constant step et_lr."""
     et_algo3_lag: bool = True
     """DIAGNOSTIC (R16). True (default) = Algorithm 3: the head weight update uses e_w_t, so this step's Theta
     only reaches the weights one step later. False = the head update uses the mixed y_t (this step's Theta
@@ -347,12 +356,15 @@ import flax.linen as nn  # needed for the class below (qrc.py does not import it
 class OneHotLinearQNetwork(nn.Module):
     """No convolution, no hidden layer, no bias: Q(s) = W x(s) on the flattened observation (tabular for one-hot x)."""
     action_dim: int
+    q_channels: int = 0
 
     @nn.compact
     def __call__(self, x):
         no_batch = x.ndim == 3
         if no_batch:
             x = x[None]
+        if self.q_channels:
+            x = x[..., :self.q_channels]
         x = x.reshape((x.shape[0], -1))
         x = nn.Dense(self.action_dim, use_bias=False, kernel_init=nn.initializers.zeros, name="Dense_0")(x)
         return x[0] if no_batch else x
@@ -748,12 +760,15 @@ class ETProjection(nn.Module):
 
     feat_dim: int
     action_dim: int
+    count_step: bool = False
 
     @nn.compact
     def __call__(self, x_s):
         no_batch = x_s.ndim == 1
         if no_batch:
             x_s = x_s[None]
+        if self.count_step:  # R42: visits of every input feature (updated by the agent, not by the loss)
+            self.param("count", nn.initializers.zeros, (x_s.shape[-1],))
         z = nn.Dense(self.action_dim * self.feat_dim, use_bias=False, name="Theta")(x_s)
         z = z.reshape(z.shape[0], self.action_dim, self.feat_dim)
         if no_batch:
@@ -856,7 +871,7 @@ def init_agent_state_qrc_agent(
                                          kernel_init=net_kwargs["kernel_init"])
             init_x = jnp.zeros(obs_shape)
         elif agent_config.env_type == "minatar" and agent_config.net_arch == "linear":
-            network = OneHotLinearQNetwork(action_dim=action_dim)
+            network = OneHotLinearQNetwork(action_dim=action_dim, q_channels=agent_config.q_channels)
             init_x = jnp.zeros(obs_shape)
         elif agent_config.env_type == "minatar":
             network = MinAtarQNetwork(**net_kwargs)
@@ -909,12 +924,16 @@ def init_agent_state_qrc_agent(
         f"end in action_dim={action_dim}; get_head_name() picked the wrong layer."
     )
 
-    et_module = ETProjection(feat_dim=feat_dim, action_dim=action_dim)
+    et_module = ETProjection(feat_dim=feat_dim, action_dim=action_dim, count_step=agent_config.et_count_step > 0)
     if agent_config.et_paired_rng:
         _rng = jax.random.fold_in(rng, 7919)   # does not advance the shared RNG stream
     else:
         rng, _rng = jax.random.split(rng)
-    et_params = et_module.init(_rng, jnp.zeros(feat_dim))
+    theta_in = feat_dim
+    if agent_config.et_theta_input == "extra_channels":  # R40c: theta reads the extra channels
+        theta_in = int(np.prod(obs_shape[:-1]) * (obs_shape[-1] - agent_config.q_channels))
+        print(f"theta input: observation channels {agent_config.q_channels}+ ({theta_in} values)")
+    et_params = et_module.init(_rng, jnp.zeros(theta_in))
     et_state = TrainState.create(
         apply_fn=et_module.apply,
         params=et_params,
@@ -1041,6 +1060,8 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
     et_state = agent_state.et_state
     head_name = get_head_name(config)
     x_s = q_grads["params"][head_name]["kernel"][:, action]  # = x(s)
+    if config.et_theta_input == "extra_channels":  # R40c: theta reads the extra (e.g. state-id) channels
+        x_s = jax.lax.stop_gradient(obs[..., config.q_channels:]).reshape(-1)
 
     et_trace_target = jax.lax.stop_gradient(
         grad_q_trace_t["params"][head_name]["kernel"][:, action]
@@ -1068,6 +1089,13 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
     (et_trace_loss, z_for_update), et_grads = jax.value_and_grad(
         et_loss_fn, has_aux=True
     )(et_state.params)
+    if config.et_count_step > 0:  # R42: theta step = 1 / (visits of each input feature) ** et_count_step
+        seen = jnp.abs(jax.lax.stop_gradient(x_s))
+        visits = et_state.params["params"]["count"] + seen
+        row = (head_grad_t.shape[0] / (2.0 * jnp.maximum(jnp.sum(seen ** 2), 1e-8))
+               * jnp.maximum(visits, 1.0) ** (-config.et_count_step) / config.et_lr)
+        et_grads = {"params": {"Theta": {"kernel": et_grads["params"]["Theta"]["kernel"] * row[:, None]},
+                               "count": -seen / config.et_lr}}
     new_et_state = et_state.apply_gradients(grads=et_grads)
 
     # ── ET(lambda, eta) mixing (Eq. 3): the REAL recursive mixture trace ──
@@ -1108,6 +1136,8 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
             tree.scale(-h_t, q_grads),  # -h * ∇q
             q_update,
         )
+    if config.q_lambda:  # online Watkins Q(lambda): no gradient correction
+        q_update = tree.scale(td_error, grad_q_trace_for_update)
     if config.freeze_body:
         q_update = mask_body(q_update)
     q_train_state = train_state.apply_gradients(

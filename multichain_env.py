@@ -176,8 +176,119 @@ class MultiChainSparseEnv(MultiChainPredEnv):
         return super().step(action)
 
 
-for _m in (8, 32):
+for _m in (8, 32, 128):
     for _p in (0.2, 0.5, 0.9):
         _id = f"MultiChainSparse-m{_m}-n4-p{_p}-v0"
         if _id not in gym.envs.registry:
             gym.register(id=_id, entry_point=MultiChainSparseEnv, kwargs=dict(m=_m, n=4, p=_p), max_episode_steps=100)
+
+
+class MultiChainCodeEnv(MultiChainSparseEnv):
+    """Sparse multi-chain with SHARED features (R40): every state gets a fixed random binary code of length `code_dim`
+    with `k` ones (all codes distinct; the same codes for every run, set by `code_seed`). code_dim = n_states with k = 1
+    is one-hot (no sharing); shorter codes make more states share each feature. Written into a 10x10xC grid like the
+    other variants, so the linear agent sees exactly the code vector."""
+
+    def __init__(self, m=32, n=4, p=0.2, code_dim=16, k=3, code_seed=0, gamma=0.99, with_id=False):
+        super().__init__(m=m, n=n, p=p, gamma=gamma)
+        self.code_dim, self.k = code_dim, k
+        if k == 1 and code_dim == self.n_states:
+            codes = np.eye(self.n_states, dtype=np.float32)
+        else:
+            rng, seen, rows = np.random.default_rng(code_seed), set(), []
+            assert math.comb(code_dim, k) >= self.n_states, "not enough distinct codes"
+            while len(rows) < self.n_states:
+                idx = tuple(sorted(rng.choice(code_dim, size=k, replace=False)))
+                if idx not in seen:
+                    seen.add(idx)
+                    row = np.zeros(code_dim, dtype=np.float32); row[list(idx)] = 1.0
+                    rows.append(row)
+            codes = np.stack(rows)
+        self.codes = codes
+        self.code_channels = math.ceil(code_dim / 100)
+        self.with_id = with_id               # R40c: one-hot state id in extra channels after the code
+        self.channels = self.code_channels + (math.ceil(self.n_states / 100) if with_id else 0)
+        self.observation_space = spaces.Box(0.0, 1.0, (10, 10, self.channels), dtype=np.float32)
+
+    def _encode(self, k):
+        o = np.zeros(100 * self.channels, dtype=np.float32)
+        o[:self.code_dim] = self.codes[k]
+        if self.with_id:
+            o[100 * self.code_channels + k] = 1.0
+        return o.reshape(self.channels, 10, 10).transpose(1, 2, 0).copy()
+
+
+# R40 codes for m=32 (130 states): one-hot, then shorter multi-hot codes (k chosen so every state keeps its own code)
+R40_CODES = [(130, 1), (64, 3), (32, 3), (16, 3), (10, 5)]
+for _p in (0.2, 0.9):
+    for _D, _k in R40_CODES:
+        _id = f"MultiChainCode-m32-n4-p{_p}-D{_D}-k{_k}-v0"
+        if _id not in gym.envs.registry:
+            gym.register(id=_id, entry_point=MultiChainCodeEnv, kwargs=dict(m=32, n=4, p=_p, code_dim=_D, k=_k),
+                         max_episode_steps=100)
+
+# R40c: the same codes plus a one-hot state id in extra channels (Q reads only the code; theta can read the id)
+for _p in (0.2, 0.9):
+    for _D, _k in R40_CODES:
+        _id = f"MultiChainCodeId-m32-n4-p{_p}-D{_D}-k{_k}-v0"
+        if _id not in gym.envs.registry:
+            gym.register(id=_id, entry_point=MultiChainCodeEnv,
+                         kwargs=dict(m=32, n=4, p=_p, code_dim=_D, k=_k, with_id=True), max_episode_steps=100)
+
+
+class MultiChainPaperEnv(MultiChainPredEnv):
+    """R42: the multi-chain exactly as in van Hasselt et al. (2021), Fig. 3: every reward is +1, except the last one,
+    which is +1 with probability 0.9 and -1 with probability 0.1.
+    features="onehot": one feature per state (the tabular setting of Fig. 4).
+    features="paper" : the linear features of Fig. 5 -- branch indicator (m), progress indicator (n), a bias, and two
+                       flags for the start and the shared (bottleneck) state. All chains share the progress features."""
+
+    def __init__(self, m=32, n=4, features="onehot", p_plus=0.9, gamma=0.99):
+        super().__init__(m=m, n=n, sigma=0.0, mean=2.0 * p_plus - 1.0, gamma=gamma)
+        self.features, self.p_plus = features, p_plus
+        if features == "paper":
+            self.feat_dim = m + n + 3
+            self.channels = math.ceil(self.feat_dim / 100)
+            self.observation_space = spaces.Box(0.0, 1.0, (10, 10, self.channels), dtype=np.float32)
+
+    def _encode(self, k):
+        if self.features != "paper":
+            return super()._encode(k)
+        m, n = self.m, self.n
+        x = np.zeros(100 * self.channels, dtype=np.float32)
+        x[m + n] = 1.0                                         # bias
+        if k == 0:
+            x[m + n + 1] = 1.0                                 # start state
+        elif k == self.n_states - 1:
+            x[m + n + 2] = 1.0                                 # shared (bottleneck) state
+        else:
+            c, i = divmod(k - 1, n)
+            x[c] = 1.0                                         # which branch
+            x[m + i] = 1.0                                     # progress along the chain
+        return x.reshape(self.channels, 10, 10).transpose(1, 2, 0).copy()
+
+    def true_values(self):
+        v = np.zeros(self.n_states)
+        b = self.n_states - 1
+        v[b] = self.mean                                       # expected last reward: 0.9 - 0.1 = 0.8
+        nxt = v[b]
+        for i in reversed(range(self.n)):                      # every earlier step gives reward +1
+            nxt = 1.0 + self.gamma * nxt
+            for c in range(self.m):
+                v[1 + c * self.n + i] = nxt
+        v[0] = 1.0 + self.gamma * nxt
+        return v
+
+    def step(self, action):
+        if self.state == self.n_states - 1:                    # shared state -> terminal, reward +1 or -1
+            return self._encode(self.state), (1.0 if self._rng.random() < self.p_plus else -1.0), True, False, {}
+        obs, _, terminated, truncated, info = super().step(action)
+        return obs, 1.0, terminated, truncated, info
+
+
+for _m in (1, 8, 32, 128):
+    for _name, _n, _feat in (("MultiChainPaper", 4, "onehot"), ("MultiChainPaperFeat", 16, "paper")):
+        _id = f"{_name}-m{_m}-n{_n}-v0"
+        if _id not in gym.envs.registry:
+            gym.register(id=_id, entry_point=MultiChainPaperEnv, kwargs=dict(m=_m, n=_n, features=_feat),
+                         max_episode_steps=100)

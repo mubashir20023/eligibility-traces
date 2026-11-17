@@ -112,6 +112,12 @@ class Args:
     """MinAtar --net_arch mlp: width of the single hidden layer."""
     init_from: str = ""
     """Path to a trained agent's .cleanrl_model: copy all layers except the Q head (Q and h networks)."""
+    q_channels: int = 0
+    """Linear network: Q and h use only the first N observation channels (0 = all)."""
+    et_theta_input: str = "features"
+    """QRC-ET: theta input -- "features" (Q-head features) or "extra_channels" (channels after q_channels)."""
+    q_lambda: bool = False
+    """Online Watkins Q(lambda): drop the gradient-correction terms (Q update = delta * trace)."""
     freeze_body: bool = False
     """Keep all layers except the head fixed (Q and h networks)."""
     """network architecture"""
@@ -297,12 +303,15 @@ import flax.linen as nn  # needed for the class below (qrc.py does not import it
 class OneHotLinearQNetwork(nn.Module):
     """No convolution, no hidden layer, no bias: Q(s) = W x(s) on the flattened observation (tabular for one-hot x)."""
     action_dim: int
+    q_channels: int = 0
 
     @nn.compact
     def __call__(self, x):
         no_batch = x.ndim == 3
         if no_batch:
             x = x[None]
+        if self.q_channels:
+            x = x[..., :self.q_channels]
         x = x.reshape((x.shape[0], -1))
         x = nn.Dense(self.action_dim, use_bias=False, kernel_init=nn.initializers.zeros, name="Dense_0")(x)
         return x[0] if no_batch else x
@@ -721,7 +730,7 @@ def init_agent_state_qrc_agent(
                                          kernel_init=net_kwargs["kernel_init"])
             init_x = jnp.zeros(obs_shape)
         elif agent_config.env_type == "minatar" and agent_config.net_arch == "linear":
-            network = OneHotLinearQNetwork(action_dim=action_dim)
+            network = OneHotLinearQNetwork(action_dim=action_dim, q_channels=agent_config.q_channels)
             init_x = jnp.zeros(obs_shape)
         elif agent_config.env_type == "minatar":
             network = MinAtarQNetwork(**net_kwargs)
@@ -831,6 +840,8 @@ def update_step_qrc_agent(agent_state, transition, terminated, truncated, is_non
             tree.scale(-h_t, q_grads),  # -h * ∇q
             q_update,
         )
+    if config.q_lambda:  # online Watkins Q(lambda): no gradient correction
+        q_update = tree.scale(td_error, grad_q_trace_t)
     if config.freeze_body:
         q_update = mask_body(q_update)
     q_train_state = train_state.apply_gradients(
