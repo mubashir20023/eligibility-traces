@@ -46,7 +46,8 @@ SCRIPTS = {"R27": "slurm/R27_freeway_2e3.sh", "R28": "slurm/R28_freeway_controls
            "R39": "slurm/R39_transfer.sh", "R39b": "slurm/R39b_frozen_matched.sh",
            "R40": "slurm/R40_multihot.sh", "R40b": "slurm/R40b_multihot_tuning.sh", "R40c": "slurm/R40c_oracle_theta.sh",
            "R41": "slurm/R41_qlambda_tune.sh", "R41F": "slurm/R41_qlambda_final.sh",
-           "R42": "slurm/R42_multichain_lambda.sh", "R43": "slurm/R43_minatar_lambda.sh"}
+           "R42": "slurm/R42_multichain_lambda.sh", "R43": "slurm/R43_minatar_lambda.sh",
+           "R42q": "slurm/R42_multichain_lambda.sh (BASE=q)", "R44": "slurm/R44_minatar_confirm.sh"}
 
 
 # ----------------------------------------------------------------------------------------------- reading

@@ -139,12 +139,12 @@ def read_runs(cache_file="wb_r40_r43_cache.pkl"):
 
 
 # ------------------------------------------------------------------------------------------------ R42 (multi-chain sweep)
-def analyse_r42(cache_file="r42_cache.pkl"):
+def analyse_r42(cache_file="r42_cache.pkl", prefix="R42"):
     """Same protocol as summarize_r42.py: lambda and learning rate chosen on seeds 101-110, reported on 111-120."""
     if not os.path.exists(cache_file):
-        raise SystemExit("r42_cache.pkl not found: run  python summarize_r42.py > r42_full.txt  first.")
+        raise SystemExit(f"{cache_file} not found: run  python summarize_r42.py {prefix}  first.")
     cache = pickle.load(open(cache_file, "rb"))
-    pat = re.compile(r"multichain_env:(MultiChain\w+)-m(\d+)-n(\d+)(?:-p([\d.]+))?-v0__R42_(qrc|etcnt|etb03|etb003|et)_lam([\d.]+)_lr([\d.]+)__(\d+)/")
+    pat = re.compile(r"multichain_env:(MultiChain\w+)-m(\d+)-n(\d+)(?:-p([\d.]+))?-v0__" + prefix + r"_(qrc|etcnt|etb03|etb003|et)_lam([\d.]+)_lr([\d.]+)__(\d+)/")
     err = defaultdict(lambda: defaultdict(dict))            # (task, window) -> (agent, lambda, lr) -> seed -> error
     for p, (st, v) in cache.items():
         m = pat.search(p)
@@ -179,11 +179,12 @@ def analyse_r42(cache_file="r42_cache.pkl"):
         if not bq:
             continue
         qd = cells[("qrc", bq[1], bq[2])]
-        r["qrc"] = dict(lam=bq[1], lr=bq[2], mean=mean_on(qd, TEST))
+        r["qrc"] = dict(lam=bq[1], lr=bq[2], mean=mean_on(qd, TEST), seeds=qd)
         for ag in ("et", "etcnt"):
             be = choose(cells, ag, lams)
             if be:
-                r[ag] = dict(lam=be[1], lr=be[2], mean=mean_on(cells[(ag, be[1], be[2])], TEST), cmp=paired(cells[(ag, be[1], be[2])], qd, TEST))
+                r[ag] = dict(lam=be[1], lr=be[2], mean=mean_on(cells[(ag, be[1], be[2])], TEST), cmp=paired(cells[(ag, be[1], be[2])], qd, TEST),
+                             seeds=cells[(ag, be[1], be[2])])
         for ag in ("etb03", "et", "etb003", "etcnt"):          # theta step check at lambda 0.9, against the best QRC
             b9 = choose(cells, ag, [0.9])
             r["step_" + ag] = paired(cells[(ag, b9[1], b9[2])], qd, TEST) if b9 else None
@@ -228,7 +229,7 @@ def draw(ax, xs, key, label, y, lo=None, hi=None, dashed=False):
             label=label, zorder=3, solid_capstyle="round")
 
 
-def finish(fig, axes, path, top=0.90):
+def finish(fig, axes, path, top=0.90, handlelength=2.2):
     handles, labels = [], []
     for ax in np.ravel(axes):
         for h, l in zip(*ax.get_legend_handles_labels()):
@@ -236,7 +237,7 @@ def finish(fig, axes, path, top=0.90):
                 handles.append(h); labels.append(l)
     if len(labels) > 1:                                        # one legend for the whole figure; a single series needs none
         fig.legend(handles, labels, loc="upper left", bbox_to_anchor=(0.005, 1.0), ncol=len(labels), frameon=False, fontsize=9,
-                   labelcolor=INK, handlelength=2.2, columnspacing=1.6)
+                   labelcolor=INK, handlelength=handlelength, columnspacing=1.6)
     fig.tight_layout(rect=(0, 0, 1, top if len(labels) > 1 else 1))
     fig.savefig(path, dpi=150, facecolor="white")
     return path
